@@ -1,4 +1,4 @@
-# 別PC用：GitHub公開・Supabase共有化 一気通貫プロンプト
+別PC用：GitHub公開・Supabase共有化 一気通貫プロンプト
 
 このファイルは、公開作業に使うWindowsノートPCのCodexへ、全文をそのままコピー＆ペーストしてください。
 
