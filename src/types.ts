@@ -2,17 +2,17 @@ import type { Edge, Node, Viewport } from '@xyflow/react'
 
 export const organizationUnits = [
   { id: 'ops-hq', name: '運営本部' },
-  { id: 'operations', name: '運営' },
-  { id: 'planning', name: '企画' },
-  { id: 'tournament-admin', name: '大会運営' },
-  { id: 'casting-relations', name: 'キャスティング・渉外' },
-  { id: 'sales', name: '営業' },
-  { id: 'partnerships', name: 'パートナーシップ' },
-  { id: 'pr-marketing', name: '広報・マーケティング' },
-  { id: 'broadcast', name: '映像・配信' },
-  { id: 'creative', name: 'クリエイティブ' },
-  { id: 'community', name: 'コミュニティ運営' },
-  { id: 'education', name: '教育・育成' },
+  { id: 'operations', name: '運営チーム' },
+  { id: 'planning', name: '企画チーム' },
+  { id: 'tournament-admin', name: '大会運営チーム（Tournament Admin）' },
+  { id: 'casting-relations', name: 'キャスティング・渉外チーム' },
+  { id: 'sales', name: '営業チーム' },
+  { id: 'partnerships', name: 'パートナーシップチーム' },
+  { id: 'pr-marketing', name: '広報・マーケティングチーム' },
+  { id: 'broadcast', name: '映像・配信チーム' },
+  { id: 'creative', name: 'クリエイティブチーム' },
+  { id: 'community', name: 'コミュニティ運営チーム' },
+  { id: 'education', name: '教育・育成チーム' },
   { id: 'administration', name: '管理部' },
 ] as const
 
@@ -65,7 +65,8 @@ export interface Task {
   updatedAt: string
 }
 
-export type AuditClassification = 'data' | 'validation' | 'persistence' | 'accessibility' | 'quality' | 'security' | 'runtime'
+export const auditClassifications = ['data','validation','persistence','accessibility','quality','security','runtime'] as const
+export type AuditClassification = typeof auditClassifications[number]
 
 export interface AuditItem {
   id: string
@@ -92,3 +93,7 @@ export interface LoadResult<T> { ok: boolean; value: T; error?: string; raw?: st
 
 export const departmentName = (id: DepartmentId) => organizationUnits.find((unit) => unit.id === id)?.name ?? '管理部'
 export const departmentIdFor = (name: Department) => organizationUnits.find((unit) => unit.name === name)?.id ?? 'administration'
+export const legacyDepartmentNames:Record<string,Department>={
+  '運営本部':'運営本部','運営':'運営チーム','企画':'企画チーム','大会運営':'大会運営チーム（Tournament Admin）','キャスティング・渉外':'キャスティング・渉外チーム','営業':'営業チーム','パートナーシップ':'パートナーシップチーム','広報・マーケティング':'広報・マーケティングチーム','映像・配信':'映像・配信チーム','クリエイティブ':'クリエイティブチーム','コミュニティ運営':'コミュニティ運営チーム','教育・育成':'教育・育成チーム','管理部':'管理部',
+}
+export const normalizeDepartmentName=(name:string)=>legacyDepartmentNames[name]??(departments.includes(name as Department)?name as Department:'管理部')

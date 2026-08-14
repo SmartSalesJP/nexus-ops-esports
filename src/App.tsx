@@ -6,8 +6,9 @@ import { TaskModal } from './components/TaskModal'
 import { ProjectCanvas } from './components/ProjectCanvas'
 import { AuditLog } from './components/AuditLog'
 import { initialAudit, initialEdges, initialNodes, initialTasks, initialViewport } from './data'
+import { createOperationAuditEntry } from './operationAudit'
 import { parseImport, readBundle, resetBundle, saveBundle, validateTaskCandidate } from './storage'
-import { type AuditClassification, type AuditItem, type ExportBundle, type FlowData, type Status, type Task, type ValidationIssue } from './types'
+import { type AuditItem, type ExportBundle, type FlowData, type Status, type Task, type ValidationIssue } from './types'
 
 type Page='tasks'|'canvas'|'audit'
 const nav=[{id:'tasks' as Page,label:'進行表',icon:Columns3},{id:'canvas' as Page,label:'キャンバス',icon:Network},{id:'audit' as Page,label:'修正ログ',icon:ScrollText}]
@@ -21,7 +22,6 @@ export default function App(){
  const shell=useRef<HTMLDivElement>(null),fileRef=useRef<HTMLInputElement>(null)
  useLayoutEffect(()=>{if(matchMedia('(prefers-reduced-motion: reduce)').matches)return;const context=gsap.context(()=>{gsap.from('[data-shell-anim]',{y:12,autoAlpha:0,duration:.42,ease:'power2.out',stagger:.045})},shell);return()=>context.revert()},[])
  useEffect(()=>{if(!notice)return;const id=setTimeout(()=>setNotice(''),2600);return()=>clearTimeout(id)},[notice])
- const auditEntry=(issueId:string,classification:AuditClassification,action:string,detail:string,files:string[],before:string,after:string):AuditItem=>({id:`a-${Date.now()}-${Math.random().toString(16).slice(2)}`,issueId,classification,targetVersion:'0.2.0',files,before,after,evidence:['localStorage bundle v2への保存結果'],retest:'操作後の再読込で確認',residualRisk:'外部サービスとの同期は対象外',round:1,at:now(),action,detail})
  const commit=(nextTasks:Task[],nextFlow:FlowData,nextAudit:AuditItem[],success:string)=>{
    const bundle:ExportBundle={schemaVersion:2,exportedAt:now(),tasks:nextTasks,flow:nextFlow,audit:nextAudit}
    const result=saveBundle(bundle)
@@ -31,7 +31,7 @@ export default function App(){
  const saveTask=(task:Task):ValidationIssue[]=>{
    const issues=validateTaskCandidate(task,tasks);if(issues.length)return issues
    const exists=tasks.some((item)=>item.id===task.id),nextTasks=exists?tasks.map((item)=>item.id===task.id?task:item):[task,...tasks]
-   const nextAudit=[auditEntry(exists?'CRUD-UPDATE':'CRUD-CREATE','validation',exists?'タスク編集':'タスク追加',`${task.id} ${task.title}`,['src/App.tsx'],exists?'旧タスク値':'未登録',exists?'検証済み新タスク値':'検証済み新規タスク'),...audit]
+   const nextAudit=[createOperationAuditEntry(exists?'OP-TASK-UPDATE':'OP-TASK-CREATE','validation',exists?'タスク編集':'タスク追加',`${task.id} ${task.title}`,['src/App.tsx'],exists?'旧タスク値':'未登録',exists?'検証済み新タスク値':'検証済み新規タスク'),...audit]
    if(commit(nextTasks,flow,nextAudit,'タスクを保存しました'))setModal({open:false})
    return []
  }
@@ -39,18 +39,18 @@ export default function App(){
    if(!confirm(`「${task.title}」を削除しますか？依存関係とキャンバス参照からも解除します。`))return
    const nextTasks=tasks.filter((item)=>item.id!==task.id).map((item)=>({...item,dependencies:item.dependencies.split(',').map((id)=>id.trim()).filter((id)=>id&&id!==task.id).join(', ')}))
    const nextFlow={...flow,nodes:flow.nodes.map((node)=>{const refs=(node.data as {taskIds?:unknown}).taskIds;return Array.isArray(refs)&&refs.includes(task.id)?{...node,data:{...node.data,taskIds:refs.filter((id)=>id!==task.id),label:String(node.data.label).replace(new RegExp(`\\n?${task.id}`,'g'),'')}}:node})}
-   const nextAudit=[auditEntry('CRUD-DELETE','validation','タスク削除',`${task.id} ${task.title}`,['src/App.tsx'],'タスク・依存・キャンバス参照あり','参照整合性を維持して削除'),...audit]
+   const nextAudit=[createOperationAuditEntry('OP-TASK-DELETE','validation','タスク削除',`${task.id} ${task.title}`,['src/App.tsx'],'タスク・依存・キャンバス参照あり','参照整合性を維持して削除'),...audit]
    commit(nextTasks,nextFlow,nextAudit,'タスクと参照を削除しました')
  }
- const changeStatus=(id:string,nextStatus:Status)=>{const nextTasks=tasks.map((task)=>task.id===id?{...task,status:nextStatus,updatedAt:now()}:task);const nextAudit=[auditEntry('CRUD-STATUS','validation','状態変更',`${id} → ${nextStatus}`,['src/App.tsx'],'旧状態',nextStatus),...audit];commit(nextTasks,flow,nextAudit,`${id} を「${nextStatus}」に変更しました`)}
- const saveCanvas=(nextFlow:FlowData)=>{const nextAudit=[auditEntry('R1-M09','persistence','キャンバス保存',`ノード${nextFlow.nodes.length}件・接続${nextFlow.edges.length}件・viewport`,['src/components/ProjectCanvas.tsx'],'個別保存','bundle一括保存'),...audit];commit(tasks,nextFlow,nextAudit,'キャンバスを保存しました')}
+ const changeStatus=(id:string,nextStatus:Status)=>{const nextTasks=tasks.map((task)=>task.id===id?{...task,status:nextStatus,updatedAt:now()}:task);const nextAudit=[createOperationAuditEntry('OP-TASK-STATUS','validation','状態変更',`${id} → ${nextStatus}`,['src/App.tsx'],'旧状態',nextStatus),...audit];commit(nextTasks,flow,nextAudit,`${id} を「${nextStatus}」に変更しました`)}
+ const saveCanvas=(nextFlow:FlowData)=>{const nextAudit=[createOperationAuditEntry('OP-CANVAS-SAVE','persistence','キャンバス保存',`ノード${nextFlow.nodes.length}件・接続${nextFlow.edges.length}件・viewport`,['src/components/ProjectCanvas.tsx'],'保存前キャンバス','bundle一括保存'),...audit];commit(tasks,nextFlow,nextAudit,'キャンバスを保存しました')}
  const reset=()=>{if(!confirm('ローカルの変更を破棄して初期データへ復元しますか？'))return;const result=resetBundle();if(!result.ok){setError(result.error??'初期化できません');return}setTasks(initialTasks);setFlow({nodes:initialNodes,edges:initialEdges,viewport:initialViewport});setAudit(initialAudit);setError('');setNotice('初期データへ復元しました')}
  const exportJson=()=>{const bundle:ExportBundle={schemaVersion:2,exportedAt:now(),tasks,flow,audit};const url=URL.createObjectURL(new Blob([JSON.stringify(bundle,null,2)],{type:'application/json'}));const anchor=document.createElement('a');anchor.href=url;anchor.download=`nexus-ops-${new Date().toISOString().slice(0,10)}.json`;anchor.click();URL.revokeObjectURL(url);setNotice('JSONを書き出しました')}
  const importJson=async(file?:File)=>{
    if(!file)return;setError('')
    try{
      const result=parseImport(await file.text());if(!result.ok){setError(result.error??'読み込みに失敗しました');return}
-     const imported=result.value,nextAudit=[auditEntry('R1-M08','validation','JSONインポート',`${imported.tasks.length}件を原子的に読み込み`,['src/storage.ts'],'既存状態','完全検証済みbundle'),...imported.audit]
+     const imported=result.value,nextAudit=[createOperationAuditEntry('OP-JSON-IMPORT','validation','JSONインポート',`${imported.tasks.length}件を原子的に読み込み`,['src/storage.ts'],'既存状態','完全検証済みbundle'),...imported.audit]
      const next={...imported,audit:nextAudit,exportedAt:now()};const saved=saveBundle(next)
      if(!saved.ok){setError(saved.error??'保存できません');return}
      setTasks(next.tasks);setFlow(next.flow);setAudit(next.audit);setNotice('データを読み込みました')

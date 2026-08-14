@@ -18,7 +18,7 @@ function Card({task,onEdit,onDelete,onStatus}:Pick<Props,'onEdit'|'onDelete'|'on
     <div className="task-card-head"><span className="task-id"><GripVertical size={14}/>{task.id}</span><span className={priorityClass(task.priority)}>{task.priority}</span></div>
     <h3>{task.title}</h3><p className="department-pill" title={`組織ID: ${task.departmentId}`}>{task.department}</p>
     <div className="task-meta"><span><UserRound size={14}/>{task.owner||'未割当'}（{task.assignmentStatus}）</span><span><CalendarDays size={14}/>{task.timing||'未設定'}（{task.dateStatus}）</span></div>
-    <div className="uncertainty"><span>{task.publicationStatus}</span><span>基準日 {task.asOf}</span>{task.conflictingSourceRefs.length>0&&<span>競合出典あり</span>}</div>
+    <div className="uncertainty"><span>{task.publicationStatus}</span><span>基準日 {task.asOf}</span>{task.conflictingSourceRefs.map((reference)=><span className="conflict-ref" key={reference}>競合: {reference}</span>)}</div>
     {task.risk&&<p className="risk"><AlertTriangle size={14}/>{task.risk}</p>}
     <div className="card-actions"><button onClick={()=>onEdit(task)} aria-label={`${task.title}を編集`}><Pencil size={15}/>編集</button><button onClick={()=>onDelete(task)} aria-label={`${task.title}を削除`}><Trash2 size={15}/>削除</button><StatusSelect task={task} onStatus={onStatus} compact/></div>
   </article>
@@ -40,7 +40,7 @@ export function TaskBoard(props:Props){
     <td data-label="部署">{task.department}<small>{task.departmentId}</small></td>
     <td data-label="責任者">{task.owner||'未割当'}<small>{task.assignmentStatus}</small></td>
     <td data-label="時期">{task.timing}<small>{task.dateStatus} / 基準日 {task.asOf}</small></td>
-    <td data-label="公開">{task.publicationStatus}</td>
+    <td data-label="公開">{task.publicationStatus}{task.conflictingSourceRefs.map((reference)=><small key={reference}>競合: {reference}</small>)}</td>
     <td data-label="状態"><StatusSelect task={task} onStatus={props.onStatus}/></td>
     <td data-label="出典 / リスク" className="risk-cell">{task.sources.map((source)=><small key={`${source.sourceId}-${source.lineStart}`}>{source.sourceId}:{source.lineStart}-{source.lineEnd} {source.confidence}</small>)}{task.risk}</td>
     <td data-label="操作"><div className="row-actions"><button onClick={()=>props.onEdit(task)} aria-label={`${task.title}を編集`}><Pencil size={16}/></button><button onClick={()=>props.onDelete(task)} aria-label={`${task.title}を削除`}><Trash2 size={16}/></button></div></td>

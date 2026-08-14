@@ -10,4 +10,5 @@ describe('TaskBoard UI',()=>{
  it('uses stable department IDs as filter values',()=>{const value=props();render(<TaskBoard {...value}/>);fireEvent.change(screen.getByLabelText('部署で絞り込み'),{target:{value:'administration'}});expect(value.setDepartment).toHaveBeenCalledWith('administration')})
  it('adds data-label to every mobile table cell',()=>{const value=props();const {container}=render(<TaskBoard {...value}/>);const cells=Array.from(container.querySelectorAll('tbody td'));expect(cells.length).toBeGreaterThan(0);expect(cells.every((cell)=>cell.hasAttribute('data-label'))).toBe(true)})
  it('labels every row status select',()=>{const value=props();render(<TaskBoard {...value}/>);const row=screen.getByText(initialTasks[0].title).closest('tr');expect(within(row!).getByLabelText(`${initialTasks[0].title}のステータス`)).toBeInTheDocument()})
+ it('shows both conflicting publication sources in the UI',()=>{const value=props();render(<TaskBoard {...value} search="T-014"/>);expect(screen.getAllByText(/S1:198-201/).length).toBeGreaterThan(0);expect(screen.getAllByText(/S3:85-90/).length).toBeGreaterThan(0)})
 })
