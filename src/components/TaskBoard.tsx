@@ -17,7 +17,7 @@ export const deadlineState=(task:Task,reference=today())=>{
   if(days<=7)return {kind:'soon' as const,label:`期限まで${days}日`,days}
   return {kind:'future' as const,label:`期限まで${days}日`,days}
 }
-const searchText=(task:Task)=>[task.id,task.title,task.team,task.owner,...task.assignees,task.deadline,task.status,task.urgency,...task.notes,...task.sourceRefs.map((source)=>`${source.sourceId}:${source.lineStart}-${source.lineEnd}`)].join(' ').toLowerCase()
+const searchText=(task:Task)=>[task.id,task.title,task.team,task.owner,...task.assignees,task.deadline,task.status,task.urgency,...task.notes,task.reason??'',...(task.rationaleCodes??[]),...task.sourceRefs.map((source)=>`${source.sourceId}:${source.lineStart}-${source.lineEnd}`)].join(' ').toLowerCase()
 const taskPeople=(task:Task)=>new Set(task.personKeys)
 const isBlocked=(task:Task,tasks:Task[])=>task.dependencies.some((id)=>tasks.find((item)=>item.id===id)?.status!=='完了')
 const authoritativeIds=new Set(initialTasks.map((task)=>task.id))
@@ -35,7 +35,8 @@ function TaskCard({task,tasks,phase5,onEdit,onDelete,onStatus}:{task:Task;tasks:
     {task.status==='保留'&&<div className="hold-reason"><Clock3 size={14}/><b>保留理由</b> {task.holdReason}</div>}
     {task.holdReason&&task.status!=='保留'&&<div className="hold-reason"><Clock3 size={14}/><b>解除条件</b> {task.holdReason}</div>}
     {task.notes.map((note)=><p className="task-note" key={note}><AlertTriangle size={14}/>{note}</p>)}
-    <div className="source-line">出典 {task.sourceRefs.map((source)=>`${source.sourceId}:${source.lineStart}-${source.lineEnd}`).join(', ')}</div>
+    {task.createdByDepartment&&<div className={`automation-note ${task.automationDisabled?'is-disabled':''}`}><b>全体進行管理部の提案 · {task.approvalState}</b><span>{task.reason}</span><span>成果物: {task.expectedDeliverable}</span>{task.automationDisabled&&<span>自動提案を無効化済み</span>}</div>}
+    <div className="source-line">{task.sourceRefs.length?`出典 ${task.sourceRefs.map((source)=>`${source.sourceId}:${source.lineStart}-${source.lineEnd}`).join(', ')}`:`内部provenance ${task.provenance?.ruleId??'なし'}`}</div>
     <div className="card-actions"><StatusSelect task={task} onStatus={onStatus}/><button onClick={()=>onEdit(task)} aria-label={`${task.title}を編集`}><Pencil size={16}/>編集</button><button onClick={()=>onDelete(task)} aria-label={`${task.title}を削除`} disabled={authoritativeIds.has(task.id)} title={authoritativeIds.has(task.id)?'S4正本タスクは削除できません':'削除'}><Trash2 size={16}/>削除</button></div>
   </article>
 }

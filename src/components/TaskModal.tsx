@@ -34,6 +34,7 @@ export function TaskModal({task,tasks,onClose,onSave}:Props){
       <Field name="holdReason" label="保留理由 / 解除条件" wide><textarea id={id('holdReason')} value={draft.holdReason} onChange={(event)=>set('holdReason',event.target.value)} required={draft.status==='保留'} rows={2}/></Field>
       <Field name="dependencies" label="依存タスクID（読点区切り）" wide><input id={id('dependencies')} value={draft.dependencies.join('、')} onChange={(event)=>set('dependencies',event.target.value.split(/[、,]/).map((value)=>value.trim()).filter(Boolean))}/></Field>
       <Field name="notes" label="注意事項（改行区切り）" wide><textarea id={id('notes')} value={draft.notes.join('\n')} onChange={(event)=>set('notes',event.target.value.split('\n').map((value)=>value.trim()).filter(Boolean))} rows={3}/></Field>
+      {draft.createdByDepartment&&<Field name="automationDisabled" label="この根拠の自動タスクを無効化する" wide><div className="automation-toggle"><input id={id('automationDisabled')} type="checkbox" checked={draft.automationDisabled??false} onChange={(event)=>set('automationDisabled',event.target.checked)}/><span>{draft.automationDisabled?'無効（週次更新で再提案しません）':'有効'}</span></div></Field>}
     </div>
     <div className="modal-actions"><button className="button ghost" type="button" onClick={onClose}>キャンセル</button><button className="button primary" type="submit">保存する</button></div>
   </form></div></div>

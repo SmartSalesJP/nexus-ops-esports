@@ -57,7 +57,19 @@ export interface Task {
   notes: string[]
   sourceRefs: SourceRef[]
   updatedAt: string
+  reason?: string
+  expectedDeliverable?: string
+  createdBy?: 'esports_progress_control'
+  createdByDepartment?: 'esports_progress_control'
+  createdRunId?: string
+  provenance?: AutoTaskProvenance
+  fingerprint?: string
+  rationaleCodes?: string[]
+  approvalState?: '要確認' | '承認' | '却下'
+  automationDisabled?: boolean
 }
+
+export interface AutoTaskProvenance { ruleId:string; sourceTaskId?:string; dependencyIds:string[]; kpiId?:KpiValue['id'] }
 
 export interface KpiValue { id: 'concurrent'|'pv'|'profit'|'sponsors'|'schools'|'participants'; label:string; target:number; unit:string; actual:number|null }
 export interface ReportSnapshot { savedAt:string; statuses:Record<string,{status:Status;updatedAt:string}> }
@@ -67,7 +79,22 @@ export const auditClassifications = ['data','validation','persistence','accessib
 export type AuditClassification = typeof auditClassifications[number]
 export interface AuditItem { id:string; issueId:string; classification:AuditClassification; targetVersion:string; files:string[]; before:string; after:string; evidence:string[]; retest:string; residualRisk:string; round:number; at:string; action:string; detail:string }
 export interface FlowData { nodes:Node[]; edges:Edge[]; viewport:Viewport }
-export interface ExportBundle { schemaVersion:3; exportedAt:string; tasks:Task[]; flow:FlowData; audit:AuditItem[]; kpis:KpiValue[]; reportBaseline:ReportSnapshot|null; migrationArchive:MigrationArchive[] }
+export interface CompletionHistory { taskId:string; firstSeen:string; lastConfirmed:string; completedWeek:string; basis:'status-change'|'inferred-from-updatedAt'; currentStatus:Status }
+export interface WeeklySnapshot { completed:number; total:number; phaseProgress:Record<string,{completed:number;total:number;rate:number}>; highUrgencyRemaining:number; blockers:number; kpis:KpiValue[] }
+export interface WeeklyRun {
+  runId:string
+  scheduledFor:string
+  ranAt:string
+  trigger:'scheduled'|'catch-up'|'manual'
+  missedWeekCount:number
+  addedStickyCount:number
+  autoTaskCount:number
+  outcome:'success'
+  reasons:string[]
+  snapshot:WeeklySnapshot
+}
+export interface WeeklyState { lastRun:WeeklyRun|null; runs:WeeklyRun[]; completions:Record<string,CompletionHistory>; tombstones:string[] }
+export interface ExportBundle { schemaVersion:4; exportedAt:string; tasks:Task[]; flow:FlowData; audit:AuditItem[]; kpis:KpiValue[]; reportBaseline:ReportSnapshot|null; migrationArchive:MigrationArchive[]; weekly:WeeklyState }
 export interface ValidationIssue { path:string; message:string }
 export interface LoadResult<T> { ok:boolean; value:T; error?:string; raw?:string }
 

@@ -17,7 +17,7 @@
 
 ## 移行
 
-schema v2読込時は旧タスク配列を `migrationArchive` へそのまま退避し、P73をアクティブ化する。flow、viewport、auditは継承する。schema v3再読込は同じarchiveを再追加しない。export bundleにはarchiveを含む。
+schema v2読込時は旧タスク配列を `migrationArchive` へそのまま退避し、P73をアクティブ化する。flow、viewport、auditは継承する。schema v3再読込は同じarchiveを再追加しない。現行schema v4への移行でもarchiveを保持し、export bundleに含める。
 
 正本73件は削除不可とし、状態変更と編集のみ許可する。追加したcustom taskは削除でき、依存・canvas参照を同時に除去して操作auditへ記録する。
 

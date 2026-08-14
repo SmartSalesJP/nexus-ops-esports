@@ -47,11 +47,19 @@ pnpm audit --audit-level=moderate
 - S4正本73件は削除不可。custom taskのみ参照整合性を維持して削除可能
 - CRUD、JSON import/export、キャンバス、監査ログ、保存失敗通知、reduced motion、キーボード操作
 - task削除、canvas、import、KPI、報告基準を含む操作audit
+- Asia/Tokyo基準の週次進行ループ。月曜00:00以後の初回起動で当週をcatch-upし、手動「今すぐ週次更新」にも対応
+- 完了タスクを1 ID 1枚の付箋へ同期し、初回完了確認日時・ISO週・担当・Phase・現在状態を表示。再オープン後も履歴を消しません
+- 1週1枚のsummary付箋に完了数、Phase別進捗、高緊急残、blocker、KPIを保存
+- 全体進行管理部の決定論的ルール（依存準備、期限/成果物確認、KPI計測・分析、milestone checklist）による要確認タスク提案。編集・削除・無効化が可能です
 
-## schema v3移行
+## schema v4移行と週次実行
 
-保存キーは `nexus.bundle.v3` です。初期表示と初期復元はP系73件だけをアクティブ正本にします。旧 `nexus.bundle.v2` を検出すると、旧T系タスク（ユーザー編集・追加を含む）を `migrationArchive` に元オブジェクトのまま1回だけ退避し、flow/viewport/auditを保持してP系73件を有効化します。旧タスクは集計へ混ぜませんが、JSON exportで回収できます。再読込でアーカイブは増殖しません。
+保存キーは `nexus.bundle.v4` です。schema v3はtasks/flow/viewport/audit/KPI/reportBaseline/migrationArchiveを保持したまま、空の週次状態を追加して一度だけ移行します。旧 `nexus.bundle.v2` を検出した場合も、旧T系タスク（ユーザー編集・追加を含む）を `migrationArchive` に元オブジェクトのまま退避し、S4のP系73件を有効化します。再読込でアーカイブは増殖しません。
 
-importはschema 2/3に対応し、上限・必須項目・列挙・原文チームと13チームIDの一致・正本S4期待行・出典必須・依存参照・循環・finite座標・canvas task参照・edge ID・audit全項目/ID・KPI finite/非負を検証後、原子的に保存します。ブラウザデータ削除には耐えられないため、定期的にJSONを書き出してください。
+週次処理は、task・canvas node・週次run・auditをメモリ上で組み立て、schema全量検証後に単一bundleとして保存し、直後に同じ文字列を再読込して一致確認します。検証/保存失敗時はReact状態を更新せず、正本へ部分的なtask/node/auditを残しません。自動タスクは `AUTO-YYYY-Www-NN`、`sourceRefs: []` とし、S4出典を偽装せず内部provenance・fingerprint・根拠コード・期待成果物・承認状態を保持します。削除した自動タスクのfingerprintはtombstoneに保存し、同根拠での復活を止めます。
+
+ブラウザが閉じている間はJavaScriptを実行できないため、厳密な月曜00:00実行は保証しません。次回起動時に過去週を捏造せず「当週1回」だけcatch-upし、飛ばした週数をsummaryへ記録します。Codexや外部schedulerはlocalStorageを直接編集せず、週次タスク/threadを起動して検証・報告する副系としてください。アプリ内catch-upが正です。詳細は [週次進行ループ運用](docs/weekly-progress-loop.md) を参照してください。
+
+importはschema 2/3/4に対応し、上限・必須項目・列挙・原文チームと13チームIDの一致・正本S4期待行・出典必須・依存参照・循環・finite座標・canvas task参照・edge ID・audit全項目/ID・KPI finite/非負・週次run/snapshot/completion/tombstoneを検証後、原子的に保存します。ブラウザデータ削除には耐えられないため、定期的にJSONを書き出してください。
 
 詳細は [S4統合仕様](docs/full-tasklist-integration.md) と `docs/verification/` を参照してください。

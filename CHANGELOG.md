@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-08-14 — 0.4.0 / 週次進行ループ
+
+- Asia/Tokyoの月曜00:00を境界にしたISO週runと、起動時catch-up・手動実行を追加。同一週のrun/task/node/auditは固定IDで冪等化。
+- 完了taskの1 ID 1付箋、再オープン履歴、週次summary、既存node/edge/viewport・ユーザー移動座標の保持を実装。
+- 決定論的な不足task提案ルールを追加。自動taskはS4出典を持たず、内部provenance・根拠・期待成果物・要確認状態を保持し、編集・削除・無効化・tombstone抑止に対応。
+- schema v4へ安全移行し、週次task/node/run/auditを全量検証後に単一bundle保存・再読込確認。保存失敗時は画面状態を変更しない。
+- JST/ISO年境界、固定+09:00、catch-up、冪等、完了→再オープン、悪性weekly JSON、保存失敗、schema v3移行、desktop/mobile E2Eを追加。
+
 ## 2026-08-14 — 0.3.0 / 全タスクリスト統合
 
 - S4（SHA-256 `D24C…BE87`、300行）を権威ある計画として追加し、P0-01〜P6-07の73件へ初期データを更新。

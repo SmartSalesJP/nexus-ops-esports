@@ -4,8 +4,9 @@ import { currentPhaseFor, initialAudit, initialEdges, initialKpis, initialNodes,
 import { SOURCE_CATALOG } from './sourceCatalog'
 import { KEYS, parseImport, readBundle, saveBundle, validateBundle, validateTaskCandidate } from './storage'
 import { departmentIdFor, normalizeDepartmentName, type ExportBundle, type Task } from './types'
+import { emptyWeeklyState, runWeeklyBundle } from './weekly'
 
-const bundle=():ExportBundle=>({schemaVersion:3,exportedAt:new Date().toISOString(),tasks:structuredClone(initialTasks),flow:{nodes:structuredClone(initialNodes),edges:structuredClone(initialEdges),viewport:structuredClone(initialViewport)},audit:structuredClone(initialAudit),kpis:structuredClone(initialKpis),reportBaseline:null,migrationArchive:[]})
+const bundle=():ExportBundle=>({schemaVersion:4,exportedAt:new Date().toISOString(),tasks:structuredClone(initialTasks),flow:{nodes:structuredClone(initialNodes),edges:structuredClone(initialEdges),viewport:structuredClone(initialViewport)},audit:structuredClone(initialAudit),kpis:structuredClone(initialKpis),reportBaseline:null,migrationArchive:[],weekly:emptyWeeklyState()})
 beforeEach(()=>localStorage.clear())
 
 describe('authoritative S4 plan',()=>{
@@ -37,7 +38,7 @@ describe('authoritative S4 plan',()=>{
   it('selects Phase 0 on the source as-of date and documents September precedence',()=>{expect(currentPhaseFor(new Date('2026-08-14T12:00:00+09:00'))).toBe(0);expect(currentPhaseFor(new Date('2026-09-15T12:00:00+09:00'))).toBe(1);expect(currentPhaseFor(new Date('2026-10-01T00:00:00+09:00'))).toBe(2)})
 })
 
-describe('schema v3 validation and migration',()=>{
+describe('schema v4 validation and migration',()=>{
   it('accepts the initial bundle',()=>expect(validateBundle(bundle())).toEqual([]))
   it('rejects unknown raw teams instead of falling back to administration',()=>{expect(departmentIdFor('未知チーム')).toBeUndefined();expect(normalizeDepartmentName('未知チーム')).toBeUndefined();const value=bundle();value.tasks[0].rawTeam='未知チーム';expect(validateBundle(value).some((issue)=>issue.path.endsWith('rawTeam'))).toBe(true)})
   it('archives a v2 bundle exactly while activating P73 once',()=>{
@@ -48,6 +49,7 @@ describe('schema v3 validation and migration',()=>{
     const second=readBundle();expect(second.value.tasks).toHaveLength(73);expect(second.value.migrationArchive).toHaveLength(1)
   })
   it('imports schema v2 atomically into the same archive model',()=>{const legacy={schemaVersion:2,exportedAt:new Date().toISOString(),tasks:[{id:'T-999',title:'custom'}],flow:bundle().flow,audit:[]};const result=parseImport(JSON.stringify(legacy));expect(result.ok).toBe(true);expect(result.value.tasks).toHaveLength(73);expect(result.value.migrationArchive[0].tasks).toEqual(legacy.tasks)})
+  it('migrates schema v3 to v4 without losing flow, audit, KPI, baseline or migrationArchive',()=>{const current=bundle(),{weekly:_,...legacy}=current,archive={fromSchema:2,migratedAt:new Date().toISOString(),reason:'保持確認',tasks:[{id:'T-1'}]};void _;const v3={...legacy,schemaVersion:3,migrationArchive:[archive],flow:{...legacy.flow,viewport:{x:44,y:55,zoom:1.4}}};localStorage.setItem(KEYS.legacyV3,JSON.stringify(v3));const result=readBundle();expect(result.ok).toBe(true);expect(result.value).toMatchObject({schemaVersion:4,flow:{viewport:{x:44,y:55,zoom:1.4}},migrationArchive:[archive],weekly:{lastRun:null,runs:[],completions:{},tombstones:[]}});expect(result.value.audit).toEqual(v3.audit);expect(result.value.kpis).toEqual(v3.kpis)})
   it('rejects blank and zero-width hold reasons',()=>{for(const reason of ['', '   ', '\u200b']){const task={...initialTasks[0],status:'保留' as const,holdReason:reason};expect(validateTaskCandidate(task,initialTasks).some((issue)=>issue.path.endsWith('holdReason'))).toBe(true)}})
   it('rejects missing dependency and cycles',()=>{const missing={...initialTasks[0],dependencies:['P9-99']};expect(validateTaskCandidate(missing,initialTasks).some((issue)=>issue.message.includes('存在しない'))).toBe(true);const a={...initialTasks[0],dependencies:['P0-02']},b={...initialTasks[1],dependencies:['P0-01']};expect(validateTaskCandidate(a,initialTasks.map((task)=>task.id===b.id?b:task)).some((issue)=>issue.message.includes('循環'))).toBe(true)})
   it('atomically rejects malicious source, flow, edge and audit bundles',()=>{
@@ -65,4 +67,15 @@ describe('schema v3 validation and migration',()=>{
   })
   it('validates every audit field and rejects duplicate audit IDs',()=>{const invalid=bundle();invalid.audit.push({...invalid.audit[0]});expect(validateBundle(invalid).some((issue)=>issue.message.includes('監査ログID'))).toBe(true);const missing=bundle();missing.audit=[{} as never];expect(validateBundle(missing).filter((issue)=>issue.path.startsWith('audit')).length).toBeGreaterThan(5)})
   it('does not mutate persisted state when storage fails',()=>{const value=bundle(),spy=vi.spyOn(Storage.prototype,'setItem').mockImplementation(()=>{throw new DOMException('quota','QuotaExceededError')});expect(saveBundle(value).ok).toBe(false);spy.mockRestore()})
+  it('rejects malformed weekly snapshots and forged S4 references on auto tasks',()=>{const value=bundle();value.weekly={lastRun:{runId:'weekly:2026-W33',scheduledFor:'2026-08-10T00:00:00+09:00',ranAt:'2026-08-14T00:00:00.000Z',trigger:'manual',missedWeekCount:0,addedStickyCount:1,autoTaskCount:0,outcome:'success',reasons:[],snapshot:{completed:-1,total:73,phaseProgress:{} as never,highUrgencyRemaining:1,blockers:0,kpis:[]}},runs:[],completions:{},tombstones:[]};expect(validateBundle(value).some((issue)=>issue.path.startsWith('weekly'))).toBe(true);const generated=runWeeklyBundle(bundle(),new Date('2026-08-14T12:00:00+09:00'),'manual'),auto=generated.tasks.find((task)=>task.createdByDepartment)!;auto.sourceRefs=[initialTasks[0].sourceRefs[0]];expect(validateBundle(generated).some((issue)=>issue.path.endsWith('sourceRefs'))).toBe(true)})
+  it('atomically rejects semantically forged weekly snapshots, schedules, links and provenance',()=>{
+    localStorage.setItem('weekly-sentinel','unchanged');const valid=runWeeklyBundle(bundle(),new Date('2026-08-14T12:00:00+09:00'),'manual'),variants:ExportBundle[]=[]
+    const impossible=structuredClone(valid),impossibleRun=impossible.weekly.runs[0];impossibleRun.snapshot.completed=999;impossibleRun.snapshot.total=73;impossible.weekly.lastRun=structuredClone(impossibleRun);variants.push(impossible)
+    const wrongMonday=structuredClone(valid),wrongRun=wrongMonday.weekly.runs[0];wrongRun.scheduledFor='2030-01-07T00:00:00+09:00';wrongMonday.weekly.lastRun=structuredClone(wrongRun);const wrongSummary=wrongMonday.flow.nodes.find((node)=>node.id===`weekly-summary:${wrongRun.runId}`)!;wrongSummary.data={...wrongSummary.data,scheduledFor:wrongRun.scheduledFor};variants.push(wrongMonday)
+    const noSummary=structuredClone(valid);noSummary.flow.nodes=noSummary.flow.nodes.filter((node)=>!node.id.startsWith('weekly-summary:'));variants.push(noSummary)
+    const danglingSummary=structuredClone(valid);danglingSummary.flow.nodes.push({id:'weekly-summary:weekly:2030-W01',position:{x:1,y:1},data:{weeklyKind:'summary',runId:'weekly:2030-W01',scheduledFor:'2029-12-31T00:00:00+09:00',snapshot:valid.weekly.runs[0].snapshot,taskIds:[]}});variants.push(danglingSummary)
+    const completedSource=bundle();completedSource.tasks[0]={...completedSource.tasks[0],status:'完了',updatedAt:'2026-08-12T00:00:00.000Z'};const danglingCompletion=runWeeklyBundle(completedSource,new Date('2026-08-14T12:00:00+09:00'),'manual');danglingCompletion.flow.nodes=danglingCompletion.flow.nodes.filter((node)=>node.id!=='weekly-complete:P0-01');variants.push(danglingCompletion)
+    const forged=structuredClone(valid),auto=forged.tasks.find((task)=>task.createdByDepartment==='esports_progress_control')!;auto.fingerprint=`${auto.fingerprint}:forged`;variants.push(forged)
+    variants.forEach((value)=>{expect(validateBundle(value).length).toBeGreaterThan(0);expect(parseImport(JSON.stringify(value)).ok).toBe(false);expect(localStorage.getItem('weekly-sentinel')).toBe('unchanged')})
+  })
 })
