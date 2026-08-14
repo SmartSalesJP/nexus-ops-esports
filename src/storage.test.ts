@@ -1,50 +1,68 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { deriveDateStatus, initialAudit, initialEdges, initialNodes, initialTasks, initialViewport } from './data'
-import { KEYS, isBundle, parseImport, readBundle, saveBundle, validateBundle, validateTaskCandidate } from './storage'
-import type { ExportBundle } from './types'
+import { readFileSync } from 'node:fs'
+import { currentPhaseFor, initialAudit, initialEdges, initialKpis, initialNodes, initialTasks, initialViewport, phaseCounts } from './data'
+import { SOURCE_CATALOG } from './sourceCatalog'
+import { KEYS, parseImport, readBundle, saveBundle, validateBundle, validateTaskCandidate } from './storage'
+import { departmentIdFor, normalizeDepartmentName, type ExportBundle, type Task } from './types'
 
-const bundle=():ExportBundle=>({schemaVersion:2,exportedAt:new Date().toISOString(),tasks:structuredClone(initialTasks),flow:{nodes:structuredClone(initialNodes),edges:structuredClone(initialEdges),viewport:initialViewport},audit:structuredClone(initialAudit)})
+const bundle=():ExportBundle=>({schemaVersion:3,exportedAt:new Date().toISOString(),tasks:structuredClone(initialTasks),flow:{nodes:structuredClone(initialNodes),edges:structuredClone(initialEdges),viewport:structuredClone(initialViewport)},audit:structuredClone(initialAudit),kpis:structuredClone(initialKpis),reportBaseline:null,migrationArchive:[]})
+beforeEach(()=>localStorage.clear())
 
-describe('versioned local bundle',()=>{
- beforeEach(()=>localStorage.clear())
- it('returns initial data when no saved value exists',()=>{const result=readBundle();expect(result.ok).toBe(true);expect(result.value.tasks).toHaveLength(39)})
- it('persists nodes, edges and viewport atomically',()=>{const value=bundle();value.flow.viewport={x:12,y:-4,zoom:1.3};expect(saveBundle(value).ok).toBe(true);expect(readBundle().value.flow.viewport).toEqual(value.flow.viewport)})
- it('reports corrupt data, preserves the raw value, and does not silently overwrite it',()=>{localStorage.setItem(KEYS.bundle,'{broken');const result=readBundle();expect(result.ok).toBe(false);expect(result.raw).toBe('{broken');expect(localStorage.getItem(KEYS.bundle)).toBe('{broken')})
- it('returns a LoadResult when localStorage read throws and calls getItem only once',()=>{const spy=vi.spyOn(Storage.prototype,'getItem').mockImplementation(()=>{throw new DOMException('denied','SecurityError')});const result=readBundle();expect(result.ok).toBe(false);expect(result.error).toContain('取得できません');expect(spy).toHaveBeenCalledTimes(1);spy.mockRestore()})
- it('returns a write error instead of throwing',()=>{const spy=vi.spyOn(Storage.prototype,'setItem').mockImplementation(()=>{throw new DOMException('quota','QuotaExceededError')});expect(saveBundle(bundle()).ok).toBe(false);spy.mockRestore()})
- it('migrates legacy department display names by stable ID and persists the formal name',()=>{const value=bundle();value.tasks[2].department='運営' as never;localStorage.setItem(KEYS.bundle,JSON.stringify(value));const result=readBundle();expect(result.ok).toBe(true);expect(result.value.tasks[2].department).toBe('運営チーム');expect(JSON.parse(localStorage.getItem(KEYS.bundle)!).tasks[2].department).toBe('運営チーム')})
+describe('authoritative S4 plan',()=>{
+  it('has exactly 73 unique IDs and the required phase distribution',()=>{expect(initialTasks).toHaveLength(73);expect(new Set(initialTasks.map((task)=>task.id)).size).toBe(73);expect([0,1,2,3,4,5,6].map((phase)=>initialTasks.filter((task)=>task.phase===phase).length)).toEqual(phaseCounts)})
+  it('matches urgency, status, owner and team oracles',()=>{
+    const count=(field:keyof Task,value:string)=>initialTasks.filter((task)=>task[field]===value).length
+    expect(['高','中','低'].map((value)=>count('urgency',value))).toEqual([34,34,5])
+    expect(['未着手','進行中','完了','保留'].map((value)=>count('status',value))).toEqual([58,15,0,0])
+    expect(['鈴木','ウメノ','ロブ','ウニュ','ユウタ','浜名'].map((value)=>count('owner',value))).toEqual([20,18,14,8,8,5])
+    expect(['ops-hq','operations','planning','tournament-admin','casting-relations','sales','partnerships','pr-marketing','broadcast','creative','community','education','administration'].map((value)=>count('teamId',value))).toEqual([6,6,5,5,8,8,8,5,6,6,1,1,8])
+  })
+  it('preserves representative values, dependencies and blocker semantics',()=>{
+    expect(initialTasks.find((task)=>task.id==='P0-01')).toMatchObject({rawTeam:'キャスティング',teamId:'casting-relations',team:'キャスティング・渉外チーム',owner:'ロブ',assignees:['ウメノ（講師経由の伝手）'],rawAssignees:'ウメノ（講師経由の伝手）',personKeys:['ウメノ'],urgency:'高',deadline:'即時（〜8/18）',deadlineDate:'2026-08-18',status:'未着手'})
+    expect(initialTasks.find((task)=>task.id==='P0-01')?.notes.join(' ')).toContain('旧期限「7月中」は超過')
+    expect(initialTasks.find((task)=>task.id==='P2-12')?.dependencies).toEqual(['P2-10'])
+    for(const id of ['P3-05','P4-09','P5-04','P6-05'])expect(initialTasks.find((task)=>task.id===id)).toMatchObject({status:'未着手',dependencies:['P0-07'],holdReason:'スン業務委託契約待ち（P0-07）'})
+    expect(initialTasks.find((task)=>task.id==='P3-05')).toMatchObject({rawAssignees:'鈴木、ウメノ、（スン※契約後）',personKeys:['鈴木','ウメノ','スン']})
+    expect(initialTasks.find((task)=>task.id==='P1-05')?.team).toBe('大会運営チーム（Tournament Admin）')
+  })
+  it('matches all 73 Markdown rows field-for-field and by exact source line',()=>{
+    const path='C:\\Users\\81904\\OneDrive\\デスクトップ\\新しいフォルダー (2)\\OneDrive\\デスクトップ\\EXCEL ×TBC\\eスポーツ大会_開催設計_全タスクリスト.md'
+    const lines=readFileSync(path,'utf8').split(/\r?\n/);if(lines.at(-1)==='')lines.pop();expect(lines).toHaveLength(300)
+    const sourceRows=lines.map((line,index)=>({line,index:index+1})).filter(({line})=>/^\| P[0-6]-\d{2} \|/.test(line))
+    expect(sourceRows).toHaveLength(73)
+    sourceRows.forEach(({line,index},taskIndex)=>{const cells=line.split('|').slice(1,-1).map((cell)=>cell.trim()),[id,title,rawTeam,owner,rawAssignees,rawUrgency,deadline,status]=cells,task=initialTasks[taskIndex],teamId=departmentIdFor(rawTeam),team=normalizeDepartmentName(rawTeam);expect(task,`${id} line ${index}`).toMatchObject({id,title,rawTeam,teamId,team,owner,rawAssignees,assignees:rawAssignees.split(/[、,]/).map((value)=>value.trim()).filter(Boolean),urgency:rawUrgency==='🔴'?'高':rawUrgency==='🟡'?'中':'低',deadline,status});expect(task.sourceRefs[0]).toMatchObject({sourceId:'S4',lineStart:index,lineEnd:index,sha256:SOURCE_CATALOG.S4.sha256})})
+  })
+  it('tracks every task to S4 exact line and keeps the previous three sources',()=>{expect(Object.keys(SOURCE_CATALOG)).toEqual(['S1','S2','S3','S4']);expect(SOURCE_CATALOG.S4).toMatchObject({sha256:'D24C5785D0AA8D3D4995767EAB565016E346149294ABEB0E0133C163C0E2BE87',maxLine:300});expect(initialTasks.find((task)=>task.id==='P6-07')?.sourceRefs[0]).toMatchObject({sourceId:'S4',lineStart:220,lineEnd:220})})
+  it('does not manufacture exact dates for ambiguous deadlines',()=>{expect(initialTasks.find((task)=>task.id==='P2-12')?.deadlineDate).toBeUndefined();expect(initialTasks.find((task)=>task.id==='P4-01')?.deadlineDate).toBeUndefined();expect(initialTasks.find((task)=>task.id==='P3-08')?.deadlineDate).toBe('2027-01-15')})
+  it('selects Phase 0 on the source as-of date and documents September precedence',()=>{expect(currentPhaseFor(new Date('2026-08-14T12:00:00+09:00'))).toBe(0);expect(currentPhaseFor(new Date('2026-09-15T12:00:00+09:00'))).toBe(1);expect(currentPhaseFor(new Date('2026-10-01T00:00:00+09:00'))).toBe(2)})
 })
 
-describe('complete import validation',()=>{
- it('accepts a valid schema v2 bundle',()=>expect(isBundle(bundle())).toBe(true))
- it('rejects unsupported schema versions and invalid datetime',()=>{const value={...bundle(),schemaVersion:1,exportedAt:'x'};const paths=validateBundle(value).map((issue)=>issue.path);expect(paths).toContain('schemaVersion');expect(paths).toContain('exportedAt')})
- it('rejects duplicate IDs, dangling refs, self refs, and cycles',()=>{
-   const duplicate=bundle();duplicate.tasks.push({...duplicate.tasks[0]});expect(validateBundle(duplicate).some((issue)=>issue.message.includes('重複'))).toBe(true)
-   const dangling=bundle();dangling.tasks[0].dependencies='T-999';expect(validateBundle(dangling).some((issue)=>issue.message.includes('存在しない'))).toBe(true)
-   const self=bundle();self.tasks[0].dependencies=self.tasks[0].id;expect(validateBundle(self).some((issue)=>issue.message.includes('自己参照'))).toBe(true)
-   const cycle=bundle();cycle.tasks[0].dependencies=cycle.tasks[1].id;cycle.tasks[1].dependencies=cycle.tasks[0].id;expect(validateBundle(cycle).some((issue)=>issue.message.includes('循環'))).toBe(true)
- })
- it('rejects node/edge duplicates, dangling edges and invalid task refs',()=>{
-   const duplicate=bundle();duplicate.flow.nodes.push({...duplicate.flow.nodes[0]});expect(validateBundle(duplicate).some((issue)=>issue.path==='flow.nodes'&&issue.message.includes('重複'))).toBe(true)
-   const dangling=bundle();dangling.flow.edges[0]={...dangling.flow.edges[0],target:'missing'};expect(validateBundle(dangling).some((issue)=>issue.message.includes('接続先'))).toBe(true)
-   const refs=bundle();refs.flow.nodes[0]={...refs.flow.nodes[0],data:{...refs.flow.nodes[0].data,taskIds:['T-999']}};expect(validateBundle(refs).some((issue)=>issue.path.includes('taskIds'))).toBe(true)
- })
- it('rejects malformed required source fields and enum values',()=>{const value=bundle();value.tasks[0]={...value.tasks[0],priority:'invalid' as never,sources:[{...value.tasks[0].sources[0],sha256:'bad'}]};const issues=validateBundle(value);expect(issues.some((issue)=>issue.path.endsWith('.priority'))).toBe(true);expect(issues.some((issue)=>issue.path.endsWith('.sha256'))).toBe(true)})
- it('rejects forged source metadata and out-of-range source lines',()=>{const value=bundle();value.tasks[0].sources=[{...value.tasks[0].sources[0],fileName:'fake.txt',sha256:'A'.repeat(64),asOf:'2020-01-01',lineEnd:9999}];const paths=validateBundle(value).map((issue)=>issue.path);expect(paths).toContain('tasks[0].sources[0].fileName');expect(paths).toContain('tasks[0].sources[0].sha256');expect(paths).toContain('tasks[0].sources[0].asOf');expect(paths).toContain('tasks[0].sources[0].lineEnd')})
- it('rejects invalid audit enums/types/duplicate IDs',()=>{const value=bundle();value.audit=[...value.audit,{...value.audit[0]}];value.audit[0]={...value.audit[0],classification:'fake' as never,issueId:123 as never};const issues=validateBundle(value);expect(issues.some((issue)=>issue.path.endsWith('.classification'))).toBe(true);expect(issues.some((issue)=>issue.path.endsWith('.issueId'))).toBe(true);expect(issues.some((issue)=>issue.path==='audit'&&issue.message.includes('重複'))).toBe(true)})
- it('rejects a self-connected flow edge',()=>{const value=bundle();value.flow.edges[0]={...value.flow.edges[0],target:value.flow.edges[0].source};expect(validateBundle(value).some((issue)=>issue.message.includes('自己接続'))).toBe(true)})
- it('rejects oversized files before parsing',()=>{const text=' '.repeat(2_000_001);expect(parseImport(text).error).toContain('ファイルサイズ上限')})
- it('does not mutate existing storage when parsing invalid import',()=>{const existing=bundle();saveBundle(existing);expect(parseImport('{bad').ok).toBe(false);expect(readBundle().value.tasks).toHaveLength(existing.tasks.length)})
-})
-
-describe('CRUD dependency validation',()=>{
- it('returns item errors for missing IDs and cycles',()=>{const candidate={...initialTasks[0],dependencies:'T-999'};expect(validateTaskCandidate(candidate,initialTasks)[0].path).toContain('dependencies')})
- it('rejects a cycle closed by a later edit',()=>{const first={...initialTasks[0],dependencies:''},second={...initialTasks[1],dependencies:''};const afterFirst=[{...first,dependencies:second.id},second];expect(validateTaskCandidate(afterFirst[0],[first,second])).toEqual([]);const issues=validateTaskCandidate({...second,dependencies:first.id},afterFirst);expect(issues.some((issue)=>issue.message.includes('循環'))).toBe(true)})
-})
-
-describe('round 2 source, organization and date regressions',()=>{
- it('uses the complete S3 schedule range for March, February and 8-to-3 tasks',()=>{for(const id of ['T-003','T-018','T-019']){const ref=initialTasks.find((task)=>task.id===id)!.sources.find((source)=>source.sourceId==='S3'&&source.lineStart===432);expect(ref?.lineEnd).toBe(468)}})
- it('uses all 13 formal organization names from S2',()=>{expect(new Set(initialTasks.map((task)=>task.department))).toEqual(new Set(['運営本部','運営チーム','企画チーム','大会運営チーム（Tournament Admin）','キャスティング・渉外チーム','営業チーム','パートナーシップチーム','広報・マーケティングチーム','映像・配信チーム','クリエイティブチーム','コミュニティ運営チーム','教育・育成チーム','管理部']))})
- it('does not classify an undated month range as overdue',()=>expect(deriveDateStatus('7月〜10月')).toBe('要再確認'))
- it('records both sides of the school-name publication conflict',()=>{for(const id of ['T-014','T-018','T-019','T-022']){const task=initialTasks.find((item)=>item.id===id)!;expect(task.conflictingSourceRefs).toEqual(expect.arrayContaining([expect.stringContaining('S1:198-201'),expect.stringContaining('S3:85-90')]))}})
+describe('schema v3 validation and migration',()=>{
+  it('accepts the initial bundle',()=>expect(validateBundle(bundle())).toEqual([]))
+  it('rejects unknown raw teams instead of falling back to administration',()=>{expect(departmentIdFor('未知チーム')).toBeUndefined();expect(normalizeDepartmentName('未知チーム')).toBeUndefined();const value=bundle();value.tasks[0].rawTeam='未知チーム';expect(validateBundle(value).some((issue)=>issue.path.endsWith('rawTeam'))).toBe(true)})
+  it('archives a v2 bundle exactly while activating P73 once',()=>{
+    const legacyTasks=[{id:'T-001',title:'ユーザー編集済み',status:'レビュー',custom:{memo:'保持'}}]
+    const legacy={schemaVersion:2,exportedAt:new Date().toISOString(),tasks:legacyTasks,flow:bundle().flow,audit:[]}
+    localStorage.setItem(KEYS.legacyBundle,JSON.stringify(legacy));const migrated=readBundle()
+    expect(migrated.ok).toBe(true);expect(migrated.value.tasks).toHaveLength(73);expect(migrated.value.migrationArchive).toHaveLength(1);expect(migrated.value.migrationArchive[0].tasks).toEqual(legacyTasks)
+    const second=readBundle();expect(second.value.tasks).toHaveLength(73);expect(second.value.migrationArchive).toHaveLength(1)
+  })
+  it('imports schema v2 atomically into the same archive model',()=>{const legacy={schemaVersion:2,exportedAt:new Date().toISOString(),tasks:[{id:'T-999',title:'custom'}],flow:bundle().flow,audit:[]};const result=parseImport(JSON.stringify(legacy));expect(result.ok).toBe(true);expect(result.value.tasks).toHaveLength(73);expect(result.value.migrationArchive[0].tasks).toEqual(legacy.tasks)})
+  it('rejects blank and zero-width hold reasons',()=>{for(const reason of ['', '   ', '\u200b']){const task={...initialTasks[0],status:'保留' as const,holdReason:reason};expect(validateTaskCandidate(task,initialTasks).some((issue)=>issue.path.endsWith('holdReason'))).toBe(true)}})
+  it('rejects missing dependency and cycles',()=>{const missing={...initialTasks[0],dependencies:['P9-99']};expect(validateTaskCandidate(missing,initialTasks).some((issue)=>issue.message.includes('存在しない'))).toBe(true);const a={...initialTasks[0],dependencies:['P0-02']},b={...initialTasks[1],dependencies:['P0-01']};expect(validateTaskCandidate(a,initialTasks.map((task)=>task.id===b.id?b:task)).some((issue)=>issue.message.includes('循環'))).toBe(true)})
+  it('atomically rejects malicious source, flow, edge and audit bundles',()=>{
+    localStorage.setItem('sentinel','unchanged')
+    const variants:ExportBundle[]=[]
+    const emptySource=bundle();emptySource.tasks[0].sourceRefs=[];variants.push(emptySource)
+    const wrongS4=bundle();wrongS4.tasks[0].sourceRefs[0]={...wrongS4.tasks[0].sourceRefs[0],lineStart:89,lineEnd:89};variants.push(wrongS4)
+    const unknownTeam=bundle();unknownTeam.tasks[0].rawTeam='存在しないチーム';variants.push(unknownTeam)
+    const badCanvas=bundle();badCanvas.flow.nodes[0].data={...badCanvas.flow.nodes[0].data,taskIds:['P9-99']};variants.push(badCanvas)
+    const duplicateEdge=bundle();duplicateEdge.flow.edges.push({...duplicateEdge.flow.edges[0]});variants.push(duplicateEdge)
+    const badAudit=bundle();badAudit.audit=[{} as never];variants.push(badAudit)
+    const negativeKpi=bundle();negativeKpi.kpis[0].actual=-1;variants.push(negativeKpi)
+    variants.forEach((value)=>{const result=parseImport(JSON.stringify(value));expect(result.ok).toBe(false);expect(localStorage.getItem('sentinel')).toBe('unchanged')})
+    const infinite=bundle();infinite.flow.nodes[0].position.x=Number.POSITIVE_INFINITY;expect(validateBundle(infinite).some((issue)=>issue.path.includes('flow.nodes'))).toBe(true);const infiniteKpi=bundle();infiniteKpi.kpis[0].actual=Number.POSITIVE_INFINITY;expect(validateBundle(infiniteKpi).some((issue)=>issue.path==='kpis')).toBe(true)
+  })
+  it('validates every audit field and rejects duplicate audit IDs',()=>{const invalid=bundle();invalid.audit.push({...invalid.audit[0]});expect(validateBundle(invalid).some((issue)=>issue.message.includes('監査ログID'))).toBe(true);const missing=bundle();missing.audit=[{} as never];expect(validateBundle(missing).filter((issue)=>issue.path.startsWith('audit')).length).toBeGreaterThan(5)})
+  it('does not mutate persisted state when storage fails',()=>{const value=bundle(),spy=vi.spyOn(Storage.prototype,'setItem').mockImplementation(()=>{throw new DOMException('quota','QuotaExceededError')});expect(saveBundle(value).ok).toBe(false);spy.mockRestore()})
 })

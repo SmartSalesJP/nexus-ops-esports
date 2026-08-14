@@ -1,75 +1,56 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import gsap from 'gsap'
-import { Activity, AlertTriangle, Columns3, Download, FileUp, List, Network, RotateCcw, ScrollText, ShieldCheck } from 'lucide-react'
-import { TaskBoard } from './components/TaskBoard'
-import { TaskModal } from './components/TaskModal'
-import { ProjectCanvas } from './components/ProjectCanvas'
+import { Activity, AlertTriangle, BarChart3, Columns3, Download, FileUp, List, Network, RotateCcw, Save, ScrollText, ShieldCheck, UsersRound } from 'lucide-react'
 import { AuditLog } from './components/AuditLog'
-import { initialAudit, initialEdges, initialNodes, initialTasks, initialViewport } from './data'
+import { ProjectCanvas } from './components/ProjectCanvas'
+import { TaskBoard, deadlineState, type DueView } from './components/TaskBoard'
+import { TaskModal } from './components/TaskModal'
+import { currentPhaseFor, initialTasks } from './data'
 import { createOperationAuditEntry } from './operationAudit'
+import { buildBiweeklyReport } from './report'
 import { parseImport, readBundle, resetBundle, saveBundle, validateTaskCandidate } from './storage'
-import { type AuditItem, type ExportBundle, type FlowData, type Status, type Task, type ValidationIssue } from './types'
+import { type ExportBundle, type FlowData, type ReportSnapshot, type Status, type Task, type ValidationIssue } from './types'
 
-type Page='tasks'|'canvas'|'audit'
-const nav=[{id:'tasks' as Page,label:'進行表',icon:Columns3},{id:'canvas' as Page,label:'キャンバス',icon:Network},{id:'audit' as Page,label:'修正ログ',icon:ScrollText}]
-const initialResult=readBundle()
-const now=()=>new Date().toISOString()
+type Page='tasks'|'canvas'|'report'|'audit'
+const nav=[{id:'tasks' as Page,label:'進行表',icon:Columns3},{id:'canvas' as Page,label:'キャンバス',icon:Network},{id:'report' as Page,label:'隔週報告',icon:BarChart3},{id:'audit' as Page,label:'修正ログ',icon:ScrollText}]
+const initialResult=readBundle(),now=()=>new Date().toISOString(),meaningful=(value:string)=>value.replace(/[\s\u200B-\u200D\uFEFF]/g,'').length>0
+const snapshot=(tasks:Task[]):ReportSnapshot=>({savedAt:now(),statuses:Object.fromEntries(tasks.map((task)=>[task.id,{status:task.status,updatedAt:task.updatedAt}]))})
+const authoritativeIds=new Set(initialTasks.map((task)=>task.id))
+
+function ReportMode({tasks,baseline,onBaseline}:{tasks:Task[];baseline:ReportSnapshot|null;onBaseline:()=>void}){
+  const report=buildBiweeklyReport(tasks,baseline)
+  return <section aria-labelledby="report-title"><div className="section-heading"><div><span className="eyebrow">BIWEEKLY REPORT</span><h2 id="report-title">隔週報告モード</h2><p>{baseline?`前回基準から ${report.changed.length}件変化`:'最初に比較基準を保存してください'}</p></div><button className="button primary" onClick={onBaseline}><Save size={16}/>現在を比較基準に保存</button></div><div className="report-grid"><div className="report-summary"><article><b>{report.completed.length}</b><span>完了</span></article><article><b>{report.progressing.length}</b><span>進行中</span></article><article><b>{report.blockedChanged.length}</b><span>保留・ブロック</span></article><article><b>{report.upcoming.length}</b><span>次の2週間</span></article></div><label htmlFor="line-report">LINE貼付用テキスト</label><textarea id="line-report" readOnly value={report.text} rows={18}/><button className="button ghost" onClick={async()=>navigator.clipboard?.writeText(report.text)}>テキストをコピー</button></div></section>
+}
 
 export default function App(){
- const [tasks,setTasks]=useState<Task[]>(initialResult.value.tasks),[flow,setFlow]=useState<FlowData>(initialResult.value.flow),[audit,setAudit]=useState<AuditItem[]>(initialResult.value.audit)
- const [page,setPage]=useState<Page>('tasks'),[view,setView]=useState<'kanban'|'list'>('kanban'),[search,setSearch]=useState(''),[department,setDepartment]=useState(''),[status,setStatus]=useState('')
- const [modal,setModal]=useState<{open:boolean;task?:Task|null}>({open:false}),[notice,setNotice]=useState(''),[error,setError]=useState(initialResult.error??'')
- const shell=useRef<HTMLDivElement>(null),fileRef=useRef<HTMLInputElement>(null)
- useLayoutEffect(()=>{if(matchMedia('(prefers-reduced-motion: reduce)').matches)return;const context=gsap.context(()=>{gsap.from('[data-shell-anim]',{y:12,autoAlpha:0,duration:.42,ease:'power2.out',stagger:.045})},shell);return()=>context.revert()},[])
- useEffect(()=>{if(!notice)return;const id=setTimeout(()=>setNotice(''),2600);return()=>clearTimeout(id)},[notice])
- const commit=(nextTasks:Task[],nextFlow:FlowData,nextAudit:AuditItem[],success:string)=>{
-   const bundle:ExportBundle={schemaVersion:2,exportedAt:now(),tasks:nextTasks,flow:nextFlow,audit:nextAudit}
-   const result=saveBundle(bundle)
-   if(!result.ok){setError(result.error??'保存に失敗しました');return false}
-   setTasks(nextTasks);setFlow(nextFlow);setAudit(nextAudit);setError('');setNotice(success);return true
- }
- const saveTask=(task:Task):ValidationIssue[]=>{
-   const issues=validateTaskCandidate(task,tasks);if(issues.length)return issues
-   const exists=tasks.some((item)=>item.id===task.id),nextTasks=exists?tasks.map((item)=>item.id===task.id?task:item):[task,...tasks]
-   const nextAudit=[createOperationAuditEntry(exists?'OP-TASK-UPDATE':'OP-TASK-CREATE','validation',exists?'タスク編集':'タスク追加',`${task.id} ${task.title}`,['src/App.tsx'],exists?'旧タスク値':'未登録',exists?'検証済み新タスク値':'検証済み新規タスク'),...audit]
-   if(commit(nextTasks,flow,nextAudit,'タスクを保存しました'))setModal({open:false})
-   return []
- }
- const removeTask=(task:Task)=>{
-   if(!confirm(`「${task.title}」を削除しますか？依存関係とキャンバス参照からも解除します。`))return
-   const nextTasks=tasks.filter((item)=>item.id!==task.id).map((item)=>({...item,dependencies:item.dependencies.split(',').map((id)=>id.trim()).filter((id)=>id&&id!==task.id).join(', ')}))
-   const nextFlow={...flow,nodes:flow.nodes.map((node)=>{const refs=(node.data as {taskIds?:unknown}).taskIds;return Array.isArray(refs)&&refs.includes(task.id)?{...node,data:{...node.data,taskIds:refs.filter((id)=>id!==task.id),label:String(node.data.label).replace(new RegExp(`\\n?${task.id}`,'g'),'')}}:node})}
-   const nextAudit=[createOperationAuditEntry('OP-TASK-DELETE','validation','タスク削除',`${task.id} ${task.title}`,['src/App.tsx'],'タスク・依存・キャンバス参照あり','参照整合性を維持して削除'),...audit]
-   commit(nextTasks,nextFlow,nextAudit,'タスクと参照を削除しました')
- }
- const changeStatus=(id:string,nextStatus:Status)=>{const nextTasks=tasks.map((task)=>task.id===id?{...task,status:nextStatus,updatedAt:now()}:task);const nextAudit=[createOperationAuditEntry('OP-TASK-STATUS','validation','状態変更',`${id} → ${nextStatus}`,['src/App.tsx'],'旧状態',nextStatus),...audit];commit(nextTasks,flow,nextAudit,`${id} を「${nextStatus}」に変更しました`)}
- const saveCanvas=(nextFlow:FlowData)=>{const nextAudit=[createOperationAuditEntry('OP-CANVAS-SAVE','persistence','キャンバス保存',`ノード${nextFlow.nodes.length}件・接続${nextFlow.edges.length}件・viewport`,['src/components/ProjectCanvas.tsx'],'保存前キャンバス','bundle一括保存'),...audit];commit(tasks,nextFlow,nextAudit,'キャンバスを保存しました')}
- const reset=()=>{if(!confirm('ローカルの変更を破棄して初期データへ復元しますか？'))return;const result=resetBundle();if(!result.ok){setError(result.error??'初期化できません');return}setTasks(initialTasks);setFlow({nodes:initialNodes,edges:initialEdges,viewport:initialViewport});setAudit(initialAudit);setError('');setNotice('初期データへ復元しました')}
- const exportJson=()=>{const bundle:ExportBundle={schemaVersion:2,exportedAt:now(),tasks,flow,audit};const url=URL.createObjectURL(new Blob([JSON.stringify(bundle,null,2)],{type:'application/json'}));const anchor=document.createElement('a');anchor.href=url;anchor.download=`nexus-ops-${new Date().toISOString().slice(0,10)}.json`;anchor.click();URL.revokeObjectURL(url);setNotice('JSONを書き出しました')}
- const importJson=async(file?:File)=>{
-   if(!file)return;setError('')
-   try{
-     const result=parseImport(await file.text());if(!result.ok){setError(result.error??'読み込みに失敗しました');return}
-     const imported=result.value,nextAudit=[createOperationAuditEntry('OP-JSON-IMPORT','validation','JSONインポート',`${imported.tasks.length}件を原子的に読み込み`,['src/storage.ts'],'既存状態','完全検証済みbundle'),...imported.audit]
-     const next={...imported,audit:nextAudit,exportedAt:now()};const saved=saveBundle(next)
-     if(!saved.ok){setError(saved.error??'保存できません');return}
-     setTasks(next.tasks);setFlow(next.flow);setAudit(next.audit);setNotice('データを読み込みました')
-   } catch(cause){setError(cause instanceof Error?cause.message:'JSONを読み込めませんでした')}
-   finally{if(fileRef.current)fileRef.current.value=''}
- }
- const complete=tasks.filter((task)=>task.status==='完了').length,progress=Math.round(complete/Math.max(tasks.length,1)*100),riskCount=tasks.filter((task)=>task.priority==='緊急'||task.risk.includes('要確認')||task.dateStatus==='期限超過').length
- return <div className="app" ref={shell}>
-  <div className="atmosphere" aria-hidden="true"/><header className="topbar" data-shell-anim><div className="brand"><div className="brand-mark">N</div><div><b>NEXUS OPS</b><span>ESPORTS PROJECT CONTROL</span></div></div><div className="top-actions"><button className="icon-text" onClick={exportJson}><Download size={16}/>書き出し</button><button className="icon-text" onClick={()=>fileRef.current?.click()}><FileUp size={16}/>読み込み</button><label className="sr-only" htmlFor="json-import">JSONファイルを読み込む</label><input id="json-import" className="sr-only" ref={fileRef} type="file" accept="application/json,.json" onChange={(event)=>importJson(event.target.files?.[0])}/><button className="icon-text" onClick={reset}><RotateCcw size={16}/>初期復元</button></div></header>
-  <div className="app-shell"><aside className="sidebar" data-shell-anim><nav aria-label="主要メニュー">{nav.map((item)=>{const Icon=item.icon;return <button key={item.id} className={page===item.id?'active':''} onClick={()=>setPage(item.id)}><Icon size={19}/><span>{item.label}</span></button>})}</nav><div className="sidebar-note"><ShieldCheck size={18}/><p><b>LOCAL FIRST</b>データはこのブラウザ内に一括保存されます。</p></div></aside>
-   <main><section className="hero" data-shell-anim><div><span className="eyebrow">PROJECT / ACADEMY CIRCUIT</span><h1>大会を、継続する育成基盤へ。</h1><p>3月開催想定（<b>開催年は未確定</b>）。権利・許諾・公開可否は、公開前に責任者が再確認してください。</p></div><div className="risk-banner"><AlertTriangle size={18}/><span>Riot Games / VALORANT関連</span><b>最新規約を要確認</b></div></section>
-    <section className="metric-grid" data-shell-anim aria-label="進捗サマリー"><article><span>全タスク</span><b>{tasks.length}</b><small>安定ID付き13部署</small></article><article><span>完了率</span><b>{progress}%</b><div className="progress"><i style={{width:`${progress}%`}}/></div></article><article><span>進行中</span><b>{tasks.filter((task)=>task.status==='進行中').length}</b><small>レビュー {tasks.filter((task)=>task.status==='レビュー').length}件</small></article><article><span>高注意</span><b>{riskCount}</b><small>緊急 / 期限超過 / 要確認</small></article></section>
-    <div className="truth-note" data-shell-anim><Activity size={18}/><p><b>進捗の正本はタスク進行表です。</b> キャンバスは構想整理と依存関係の可視化に使用します。</p></div>
-    <div className="page-tabs" data-shell-anim role="tablist" aria-label="ページ切替">{nav.map((item)=>{const Icon=item.icon;return <button role="tab" aria-selected={page===item.id} key={item.id} className={page===item.id?'active':''} onClick={()=>setPage(item.id)}><Icon size={17}/>{item.label}</button>})}{page==='tasks'&&<div className="view-switch"><button className={view==='kanban'?'active':''} onClick={()=>setView('kanban')} aria-label="カンバン表示"><Columns3 size={17}/></button><button className={view==='list'?'active':''} onClick={()=>setView('list')} aria-label="一覧表示"><List size={17}/></button></div>}</div>
-    <div className="page-panel" key={page}>{page==='tasks'?<TaskBoard tasks={tasks} view={view} search={search} department={department} status={status} setSearch={setSearch} setDepartment={setDepartment} setStatus={setStatus} onAdd={()=>setModal({open:true})} onEdit={(task)=>setModal({open:true,task})} onDelete={removeTask} onStatus={changeStatus}/>:page==='canvas'?<ProjectCanvas key={JSON.stringify(flow.nodes.map((node)=>node.id))} initialFlow={flow} tasks={tasks} onSave={saveCanvas}/>:<AuditLog items={audit}/>}</div>
-   </main>
-  </div>
-  {notice&&<div className="toast" role="status" aria-live="polite">{notice}</div>}
-  {error&&<div className="toast error" role="alert" aria-live="assertive">{error}</div>}
-  {modal.open&&<TaskModal task={modal.task} tasks={tasks} onClose={()=>setModal({open:false})} onSave={saveTask}/>} 
- </div>
+  const source=initialResult.value
+  const [tasks,setTasks]=useState(source.tasks),[flow,setFlow]=useState(source.flow),[audit,setAudit]=useState(source.audit),[kpis,setKpis]=useState(source.kpis),[reportBaseline,setReportBaseline]=useState(source.reportBaseline),[migrationArchive,setMigrationArchive]=useState(source.migrationArchive)
+  const [page,setPage]=useState<Page>('tasks'),[view,setView]=useState<'kanban'|'list'>('kanban'),[search,setSearch]=useState(''),[department,setDepartment]=useState(''),[status,setStatus]=useState(''),[phase,setPhase]=useState(String(currentPhaseFor(new Date()))),[person,setPerson]=useState(''),[dueView,setDueView]=useState<DueView>(''),[groupByTeam,setGroupByTeam]=useState(false)
+  const [modal,setModal]=useState<{open:boolean;task?:Task|null}>({open:false}),[notice,setNotice]=useState(''),[error,setError]=useState(initialResult.error??'')
+  const shell=useRef<HTMLDivElement>(null),fileRef=useRef<HTMLInputElement>(null)
+  useLayoutEffect(()=>{if(matchMedia('(prefers-reduced-motion: reduce)').matches)return;const context=gsap.context(()=>gsap.from('[data-shell-anim]',{y:10,autoAlpha:0,duration:.36,ease:'power2.out',stagger:.035}),shell);return()=>context.revert()},[])
+  useEffect(()=>{if(!notice)return;const timer=setTimeout(()=>setNotice(''),2600);return()=>clearTimeout(timer)},[notice])
+  const bundle=(changes:Partial<ExportBundle>={}):ExportBundle=>({schemaVersion:3,exportedAt:now(),tasks,flow,audit,kpis,reportBaseline,migrationArchive,...changes})
+  const commit=(changes:Partial<ExportBundle>,success:string)=>{const next=bundle(changes),result=saveBundle(next);if(!result.ok){setError(result.error??'保存に失敗しました');return false}setTasks(next.tasks);setFlow(next.flow);setAudit(next.audit);setKpis(next.kpis);setReportBaseline(next.reportBaseline);setMigrationArchive(next.migrationArchive);setError('');setNotice(success);return true}
+  const saveTask=(task:Task):ValidationIssue[]=>{const issues=validateTaskCandidate(task,tasks);if(issues.length)return issues;const exists=tasks.some((item)=>item.id===task.id),nextTasks=exists?tasks.map((item)=>item.id===task.id?task:item):[...tasks,task],nextAudit=[createOperationAuditEntry(exists?'OP-TASK-UPDATE':'OP-TASK-CREATE','validation',exists?'タスク編集':'タスク追加',`${task.id} ${task.title}`,['src/App.tsx'],exists?'旧値':'未登録','検証済み値'),...audit];if(commit({tasks:nextTasks,audit:nextAudit},'タスクを保存しました'))setModal({open:false});return[]}
+  const removeTask=(task:Task)=>{if(authoritativeIds.has(task.id)){setError('S4正本タスクは削除できません。状態変更または編集を使用してください。');return}if(!confirm(`「${task.title}」を削除しますか？`))return;const nextTasks=tasks.filter((item)=>item.id!==task.id).map((item)=>({...item,dependencies:item.dependencies.filter((id)=>id!==task.id)})),nextFlow={...flow,nodes:flow.nodes.map((node)=>{const refs=(node.data as {taskIds?:unknown}).taskIds;return Array.isArray(refs)?{...node,data:{...node.data,taskIds:refs.filter((id)=>id!==task.id)}}:node})},nextAudit=[createOperationAuditEntry('OP-TASK-DELETE','validation','タスク削除',`${task.id} ${task.title}`,['src/App.tsx'],'custom task登録済み','タスク・依存・canvas参照を整合削除'),...audit];commit({tasks:nextTasks,flow:nextFlow,audit:nextAudit},'カスタムタスクと参照を削除しました')}
+  const changeStatus=(id:string,nextStatus:Status)=>{const task=tasks.find((item)=>item.id===id);if(!task||task.status===nextStatus)return;let holdReason=task.holdReason;if(nextStatus==='保留'){const entered=prompt('保留理由を入力してください',holdReason);if(entered===null)return;if(!meaningful(entered)){setError('保留理由は空白以外で入力してください');return}holdReason=entered}const nextTasks=tasks.map((item)=>item.id===id?{...item,status:nextStatus,holdReason,updatedAt:now()}:item),nextAudit=[createOperationAuditEntry('OP-TASK-STATUS','validation','状態変更',`${id}: ${task.status} → ${nextStatus}`,['src/App.tsx'],task.status,nextStatus),...audit];commit({tasks:nextTasks,audit:nextAudit},`${id} を「${nextStatus}」に変更しました`)}
+  const saveCanvas=(nextFlow:FlowData)=>{const nextAudit=[createOperationAuditEntry('OP-CANVAS-SAVE','persistence','キャンバス保存',`ノード${nextFlow.nodes.length}件・接続${nextFlow.edges.length}件`,['src/components/ProjectCanvas.tsx'],'保存前canvas','検証済みflow/viewport'),...audit];commit({flow:nextFlow,audit:nextAudit},'キャンバスを保存しました')}
+  const saveKpis=()=>{const nextAudit=[createOperationAuditEntry('OP-KPI-SAVE','persistence','KPI実績更新',kpis.map((kpi)=>`${kpi.id}:${kpi.actual??'未入力'}`).join(', '),['src/App.tsx'],'保存前KPI','finiteかつ0以上のKPI'),...audit];commit({kpis,audit:nextAudit},'KPI実績を保存しました')}
+  const saveReportBaseline=()=>{const nextBaseline=snapshot(tasks),nextAudit=[createOperationAuditEntry('OP-REPORT-BASELINE','persistence','隔週報告基準更新',nextBaseline.savedAt,['src/App.tsx','src/report.ts'],'旧比較基準','現タスク状態を比較基準化'),...audit];commit({reportBaseline:nextBaseline,audit:nextAudit},'隔週報告の比較基準を保存しました')}
+  const reset=()=>{if(!confirm('ローカルの変更を破棄してS4の初期73件へ復元しますか？'))return;const result=resetBundle();if(!result.ok){setError(result.error??'初期化できません');return}const next=result.value;setTasks(next.tasks);setFlow(next.flow);setAudit(next.audit);setKpis(next.kpis);setReportBaseline(next.reportBaseline);setMigrationArchive(next.migrationArchive);setPhase(String(currentPhaseFor(new Date())));setNotice('初期73件へ復元しました')}
+  const exportJson=()=>{const url=URL.createObjectURL(new Blob([JSON.stringify(bundle(),null,2)],{type:'application/json'})),anchor=document.createElement('a');anchor.href=url;anchor.download=`nexus-ops-${new Date().toISOString().slice(0,10)}.json`;anchor.click();URL.revokeObjectURL(url);setNotice('JSONを書き出しました')}
+  const importJson=async(file?:File)=>{if(!file)return;setError('');try{const result=parseImport(await file.text());if(!result.ok){setError(result.error??'読み込みに失敗しました');return}const imported=result.value,importAudit=createOperationAuditEntry('OP-JSON-IMPORT','validation','JSONインポート',`${imported.tasks.length}件を原子的に読込`,['src/storage.ts','src/App.tsx'],'既存bundle','完全検証済みbundle'),next={...imported,exportedAt:now(),audit:[importAudit,...imported.audit]},saved=saveBundle(next);if(!saved.ok){setError(saved.error??'保存できません');return}setTasks(next.tasks);setFlow(next.flow);setAudit(next.audit);setKpis(next.kpis);setReportBaseline(next.reportBaseline);setMigrationArchive(next.migrationArchive);setNotice('データを読み込みました')}catch(cause){setError(cause instanceof Error?cause.message:'JSONを読み込めませんでした')}finally{if(fileRef.current)fileRef.current.value=''}}
+  const complete=tasks.filter((task)=>task.status==='完了').length,progress=Math.round(complete/Math.max(tasks.length,1)*100),highRemaining=tasks.filter((task)=>task.urgency==='高'&&task.status!=='完了').length,overdue=tasks.filter((task)=>deadlineState(task).kind==='overdue').length
+  const daysToMarch=Math.max(0,Math.ceil((Date.parse('2027-03-01T00:00:00+09:00')-Date.now())/86_400_000))
+  return <div className="app" ref={shell}><div className="atmosphere" aria-hidden="true"/><header className="topbar" data-shell-anim><div className="brand"><div className="brand-mark">N</div><div><b>NEXUS OPS</b><span>ESPORTS PROJECT CONTROL</span></div></div><div className="top-actions"><button className="icon-text" onClick={exportJson}><Download size={16}/>書き出し</button><button className="icon-text" onClick={()=>fileRef.current?.click()}><FileUp size={16}/>読み込み</button><label className="sr-only" htmlFor="json-import">JSONファイルを読み込む</label><input id="json-import" className="sr-only" ref={fileRef} type="file" accept="application/json,.json" onChange={(event)=>importJson(event.target.files?.[0])}/><button className="icon-text" onClick={reset}><RotateCcw size={16}/>初期復元</button></div></header>
+    <div className="app-shell"><aside className="sidebar" data-shell-anim><nav aria-label="主要メニュー">{nav.map((item)=>{const Icon=item.icon;return <button key={item.id} className={page===item.id?'active':''} onClick={()=>setPage(item.id)}><Icon size={19}/><span>{item.label}</span></button>})}</nav><div className="sidebar-note"><ShieldCheck size={18}/><p><b>LOCAL FIRST</b>schema v3一括保存 · S4追跡</p></div></aside><main>
+      <section className="hero compact-hero" data-shell-anim><div><span className="eyebrow">VALORANT NATIONAL STUDENT CUP / 2027.03</span><h1>73タスクで、大会開催までを動かす。</h1><p>全体統括 <b>鈴木</b> · 現在 Phase {currentPhaseFor(new Date())} · 開催日は2027年3月内で未確定</p></div><div className="risk-banner"><AlertTriangle size={18}/><span>Riot Games関連</span><b>公式一次情報を要確認</b></div></section>
+      <section className="metric-grid" data-shell-anim aria-label="進捗サマリー"><article><span>全タスク</span><b>{tasks.length}</b><small>Phase 0〜6</small></article><article><span>完了率</span><b>{progress}%</b><div className="progress"><i style={{width:`${progress}%`}}/></div></article><article><span>高緊急 残</span><b>{highRemaining}</b><small>期限超過 {overdue}件</small></article><article><span>3月開始まで</span><b>{daysToMarch}</b><small>日（開催日自体は未確定）</small></article></section>
+      <section className="kpi-strip" aria-label="主要KPI">{kpis.map((kpi)=><label key={kpi.id}><span>{kpi.label}</span><b>目標 {kpi.target.toLocaleString()}{kpi.unit}</b><input type="number" min="0" aria-label={`${kpi.label}の実績`} placeholder="実績未入力" value={kpi.actual??''} onChange={(event)=>setKpis((items)=>items.map((item)=>item.id===kpi.id?{...item,actual:event.target.value===''?null:Number(event.target.value)}:item))}/></label>)}<button className="button ghost" onClick={saveKpis}><Save size={15}/>KPI保存</button></section>
+      <section className="phase-progress" aria-label="Phase別完了率">{[0,1,2,3,4,5,6].map((value)=>{const phaseTasks=tasks.filter((task)=>task.phase===value),done=phaseTasks.filter((task)=>task.status==='完了').length,rate=Math.round(done/Math.max(phaseTasks.length,1)*100);return <button key={value} onClick={()=>{setPhase(String(value));setPage('tasks')}}><span>Phase {value}</span><b>{rate}%</b><i><em style={{width:`${rate}%`}}/></i></button>})}</section>
+      <div className="truth-note"><Activity size={18}/><p><b>正本: S4 / 300行 / SHA-256 D24C…BE87。</b> 旧schema v2タスクは移行アーカイブに保持し、集計へ混在させません。</p></div>
+      <div className="page-tabs-bar"><div className="page-tabs" role="tablist" aria-label="ページ切替">{nav.map((item)=>{const Icon=item.icon;return <button role="tab" aria-selected={page===item.id} key={item.id} className={page===item.id?'active':''} onClick={()=>setPage(item.id)}><Icon size={17}/>{item.label}</button>})}</div>{page==='tasks'&&<div className="view-switch"><button className={groupByTeam?'active':''} onClick={()=>setGroupByTeam((value)=>!value)} aria-label="チーム別表示"><UsersRound size={17}/></button><button className={view==='kanban'?'active':''} onClick={()=>setView('kanban')} aria-label="カード表示"><Columns3 size={17}/></button><button className={view==='list'?'active':''} onClick={()=>setView('list')} aria-label="一覧表示"><List size={17}/></button></div>}</div>
+      <div className="page-panel" key={page}>{page==='tasks'?<TaskBoard tasks={tasks} view={view} search={search} department={department} status={status} phase={phase} person={person} dueView={dueView} groupByTeam={groupByTeam} setSearch={setSearch} setDepartment={setDepartment} setStatus={setStatus} setPhase={setPhase} setPerson={setPerson} setDueView={setDueView} onAdd={()=>setModal({open:true})} onEdit={(task)=>setModal({open:true,task})} onDelete={removeTask} onStatus={changeStatus}/>:page==='canvas'?<ProjectCanvas key={JSON.stringify(flow.nodes.map((node)=>node.id))} initialFlow={flow} tasks={tasks} onSave={saveCanvas}/>:page==='report'?<ReportMode tasks={tasks} baseline={reportBaseline} onBaseline={saveReportBaseline}/>:<AuditLog items={audit}/>}</div>
+    </main></div>{notice&&<div className="toast" role="status" aria-live="polite">{notice}</div>}{error&&<div className="toast error" role="alert" aria-live="assertive">{error}</div>}{modal.open&&<TaskModal task={modal.task} tasks={tasks} onClose={()=>setModal({open:false})} onSave={saveTask}/>}</div>
 }

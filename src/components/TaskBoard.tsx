@@ -1,49 +1,65 @@
-import { AlertTriangle, CalendarDays, GripVertical, Pencil, Plus, Search, Trash2, UserRound } from 'lucide-react'
-import { organizationUnits, statuses, type Status, type Task } from '../types'
+import { useRef } from 'react'
+import { AlertTriangle, CalendarDays, Clock3, Link2, Pencil, Plus, Search, Trash2, UserRound, UsersRound } from 'lucide-react'
+import { organizationUnits, people, statuses, type Status, type Task } from '../types'
+import { initialTasks } from '../data'
 
-type Props={tasks:Task[];view:'kanban'|'list';search:string;department:string;status:string;setSearch:(v:string)=>void;setDepartment:(v:string)=>void;setStatus:(v:string)=>void;onAdd:()=>void;onEdit:(t:Task)=>void;onDelete:(t:Task)=>void;onStatus:(id:string,s:Status)=>void}
-const priorityClass=(priority:Task['priority'])=>`priority priority-${priority}`
-const searchText=(task:Task)=>[
-  task.id,task.title,task.description,task.departmentId,task.department,task.owner,task.assignmentStatus,task.timing,task.dateStatus,task.publicationStatus,task.asOf,task.priority,task.status,task.dependencies,task.risk,
-  task.conflictingSourceRefs.join(' '),task.sources.map((source)=>`${source.sourceId} ${source.fileName} ${source.lineStart}-${source.lineEnd} ${source.confidence}`).join(' '),
-].join(' ').toLowerCase()
-
-function StatusSelect({task,onStatus,compact=false}:{task:Task;onStatus:Props['onStatus'];compact?:boolean}){
-  const id=`status-${compact?'card':'row'}-${task.id}`
-  return <><label className="sr-only" htmlFor={id}>{task.title}のステータス</label><select id={id} value={task.status} onChange={(event)=>onStatus(task.id,event.target.value as Status)}>{statuses.map((status)=><option key={status}>{status}</option>)}</select></>
+export type DueView=''|'soon'|'overdue'
+type Props={tasks:Task[];view:'kanban'|'list';search:string;department:string;status:string;phase:string;person:string;dueView:DueView;groupByTeam:boolean;setSearch:(value:string)=>void;setDepartment:(value:string)=>void;setStatus:(value:string)=>void;setPhase:(value:string)=>void;setPerson:(value:string)=>void;setDueView:(value:DueView)=>void;onAdd:()=>void;onEdit:(task:Task)=>void;onDelete:(task:Task)=>void;onStatus:(id:string,status:Status)=>void}
+const today=()=>{const parts=Object.fromEntries(new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Tokyo',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date()).filter((part)=>part.type!=='literal').map((part)=>[part.type,part.value]));return`${parts.year}-${parts.month}-${parts.day}`}
+// eslint-disable-next-line react-refresh/only-export-components
+export const deadlineState=(task:Task,reference=today())=>{
+  const legacyOverdue=task.notes.some((note)=>note.includes('旧期限')&&note.includes('超過'))
+  if(!task.deadlineDate)return {kind:'unknown' as const,label:task.deadline.includes('継続')?'継続 / 日付未確定':'日付未確定'}
+  const days=Math.ceil((Date.parse(`${task.deadlineDate}T00:00:00+09:00`)-Date.parse(`${reference}T00:00:00+09:00`))/86_400_000)
+  if(legacyOverdue)return {kind:'overdue' as const,label:`旧期限超過 / 改訂期限まで${days}日`,days}
+  if(days<0)return {kind:'overdue' as const,label:`${Math.abs(days)}日超過`,days}
+  if(days===0)return {kind:'today' as const,label:'本日期限',days}
+  if(days<=7)return {kind:'soon' as const,label:`期限まで${days}日`,days}
+  return {kind:'future' as const,label:`期限まで${days}日`,days}
 }
+const searchText=(task:Task)=>[task.id,task.title,task.team,task.owner,...task.assignees,task.deadline,task.status,task.urgency,...task.notes,...task.sourceRefs.map((source)=>`${source.sourceId}:${source.lineStart}-${source.lineEnd}`)].join(' ').toLowerCase()
+const taskPeople=(task:Task)=>new Set(task.personKeys)
+const isBlocked=(task:Task,tasks:Task[])=>task.dependencies.some((id)=>tasks.find((item)=>item.id===id)?.status!=='完了')
+const authoritativeIds=new Set(initialTasks.map((task)=>task.id))
 
-function Card({task,onEdit,onDelete,onStatus}:Pick<Props,'onEdit'|'onDelete'|'onStatus'>&{task:Task}){
-  return <article className="task-card" draggable onDragStart={(event)=>event.dataTransfer.setData('text/task-id',task.id)} tabIndex={0}>
-    <div className="task-card-head"><span className="task-id"><GripVertical size={14}/>{task.id}</span><span className={priorityClass(task.priority)}>{task.priority}</span></div>
-    <h3>{task.title}</h3><p className="department-pill" title={`組織ID: ${task.departmentId}`}>{task.department}</p>
-    <div className="task-meta"><span><UserRound size={14}/>{task.owner||'未割当'}（{task.assignmentStatus}）</span><span><CalendarDays size={14}/>{task.timing||'未設定'}（{task.dateStatus}）</span></div>
-    <div className="uncertainty"><span>{task.publicationStatus}</span><span>基準日 {task.asOf}</span>{task.conflictingSourceRefs.map((reference)=><span className="conflict-ref" key={reference}>競合: {reference}</span>)}</div>
-    {task.risk&&<p className="risk"><AlertTriangle size={14}/>{task.risk}</p>}
-    <div className="card-actions"><button onClick={()=>onEdit(task)} aria-label={`${task.title}を編集`}><Pencil size={15}/>編集</button><button onClick={()=>onDelete(task)} aria-label={`${task.title}を削除`}><Trash2 size={15}/>削除</button><StatusSelect task={task} onStatus={onStatus} compact/></div>
+function StatusSelect({task,onStatus}:{task:Task;onStatus:Props['onStatus']}){return <select className="status-select" id={`status-card-${task.id}`} aria-label={`${task.title}のステータス`} value={task.status} onChange={(event)=>onStatus(task.id,event.target.value as Status)}>{statuses.map((value)=><option key={value}>{value}</option>)}</select>}
+function TaskCard({task,tasks,phase5,onEdit,onDelete,onStatus}:{task:Task;tasks:Task[];phase5:boolean;onEdit:Props['onEdit'];onDelete:Props['onDelete'];onStatus:Props['onStatus']}){
+  const due=deadlineState(task),blocked=isBlocked(task,tasks)
+  return <article className={`task-card urgency-${task.urgency} ${due.kind==='overdue'&&task.urgency==='高'?'critical-overdue':''} ${phase5?'phase5-check':''}`} data-task-id={task.id}>
+    <div className="task-card-head"><span className="task-id">{task.id}</span><span className={`urgency-badge urgency-${task.urgency}`}>緊急度 {task.urgency}</span></div>
+    <h3>{task.title}</h3>
+    <p className="department-pill">{task.team}</p>
+    <div className="task-meta"><span><UserRound size={15}/>責任者 <b>{task.owner}</b></span><span><UsersRound size={15}/>担当 {task.rawAssignees||'未割当'}</span></div>
+    <div className={`deadline deadline-${due.kind}`}><CalendarDays size={15}/><span>{task.deadline}</span><b>{due.label}</b></div>
+    {blocked&&<div className="blocked-label"><Link2 size={14}/>ブロック中：{task.dependencies.filter((id)=>tasks.find((item)=>item.id===id)?.status!=='完了').join('、')} 完了待ち</div>}
+    {task.status==='保留'&&<div className="hold-reason"><Clock3 size={14}/><b>保留理由</b> {task.holdReason}</div>}
+    {task.holdReason&&task.status!=='保留'&&<div className="hold-reason"><Clock3 size={14}/><b>解除条件</b> {task.holdReason}</div>}
+    {task.notes.map((note)=><p className="task-note" key={note}><AlertTriangle size={14}/>{note}</p>)}
+    <div className="source-line">出典 {task.sourceRefs.map((source)=>`${source.sourceId}:${source.lineStart}-${source.lineEnd}`).join(', ')}</div>
+    <div className="card-actions"><StatusSelect task={task} onStatus={onStatus}/><button onClick={()=>onEdit(task)} aria-label={`${task.title}を編集`}><Pencil size={16}/>編集</button><button onClick={()=>onDelete(task)} aria-label={`${task.title}を削除`} disabled={authoritativeIds.has(task.id)} title={authoritativeIds.has(task.id)?'S4正本タスクは削除できません':'削除'}><Trash2 size={16}/>削除</button></div>
   </article>
 }
 
 export function TaskBoard(props:Props){
- const query=props.search.trim().toLowerCase()
- const filtered=props.tasks.filter((task)=>(!query||searchText(task).includes(query))&&(!props.department||task.departmentId===props.department)&&(!props.status||task.status===props.status))
- return <section aria-labelledby="tasks-title">
-  <div className="section-heading"><div><span className="eyebrow">MISSION CONTROL</span><h2 id="tasks-title">タスク進行表</h2><p>{filtered.length} / {props.tasks.length} 件を表示</p></div><button className="button primary" onClick={props.onAdd}><Plus size={17}/>新規タスク</button></div>
-  <div className="filters" role="search">
-    <label className="search" htmlFor="task-search"><Search size={16}/><span className="sr-only">タスクを検索</span><input id="task-search" value={props.search} onChange={(event)=>props.setSearch(event.target.value)} placeholder="部署・出典・詳細・状態・時期も検索"/></label>
-    <div><label className="sr-only" htmlFor="department-filter">部署で絞り込み</label><select id="department-filter" aria-label="部署で絞り込み" value={props.department} onChange={(event)=>props.setDepartment(event.target.value)}><option value="">すべての部署</option>{organizationUnits.map((unit)=><option value={unit.id} key={unit.id}>{unit.name}</option>)}</select></div>
-    <div><label className="sr-only" htmlFor="status-filter">状態で絞り込み</label><select id="status-filter" aria-label="状態で絞り込み" value={props.status} onChange={(event)=>props.setStatus(event.target.value)}><option value="">すべての状態</option>{statuses.map((status)=><option key={status}>{status}</option>)}</select></div>
-  </div>
-  {filtered.length===0?<div className="empty"><Search/><h3>該当するタスクがありません</h3><p>検索条件を変更するか、新しいタスクを追加してください。</p></div>:props.view==='kanban'?<div className="kanban">{statuses.map((status)=><div className="kanban-column" key={status} onDragOver={(event)=>event.preventDefault()} onDrop={(event)=>{const id=event.dataTransfer.getData('text/task-id');if(id)props.onStatus(id,status)}}><div className="column-head"><span className={`status-dot status-${status}`}/><h3>{status}</h3><b>{filtered.filter((task)=>task.status===status).length}</b></div><div className="column-cards">{filtered.filter((task)=>task.status===status).map((task)=><Card key={task.id} task={task} onEdit={props.onEdit} onDelete={props.onDelete} onStatus={props.onStatus}/>)}</div></div>)}</div>:
-  <div className="table-wrap"><table><thead><tr><th>タスク</th><th>部署</th><th>責任者</th><th>時期</th><th>公開</th><th>状態</th><th>出典 / リスク</th><th>操作</th></tr></thead><tbody>{filtered.map((task)=><tr key={task.id}>
-    <td data-label="タスク"><b>{task.title}</b><small>{task.id} · 依存: {task.dependencies||'なし'}</small></td>
-    <td data-label="部署">{task.department}<small>{task.departmentId}</small></td>
-    <td data-label="責任者">{task.owner||'未割当'}<small>{task.assignmentStatus}</small></td>
-    <td data-label="時期">{task.timing}<small>{task.dateStatus} / 基準日 {task.asOf}</small></td>
-    <td data-label="公開">{task.publicationStatus}{task.conflictingSourceRefs.map((reference)=><small key={reference}>競合: {reference}</small>)}</td>
-    <td data-label="状態"><StatusSelect task={task} onStatus={props.onStatus}/></td>
-    <td data-label="出典 / リスク" className="risk-cell">{task.sources.map((source)=><small key={`${source.sourceId}-${source.lineStart}`}>{source.sourceId}:{source.lineStart}-{source.lineEnd} {source.confidence}</small>)}{task.risk}</td>
-    <td data-label="操作"><div className="row-actions"><button onClick={()=>props.onEdit(task)} aria-label={`${task.title}を編集`}><Pencil size={16}/></button><button onClick={()=>props.onDelete(task)} aria-label={`${task.title}を削除`}><Trash2 size={16}/></button></div></td>
-  </tr>)}</tbody></table></div>}
- </section>
+  const phaseRefs=useRef<Array<HTMLButtonElement|null>>([]),query=props.search.trim().toLowerCase()
+  const filtered=props.tasks.filter((task)=>{
+    const due=deadlineState(task)
+    return (!query||searchText(task).includes(query))&&(!props.department||task.teamId===props.department)&&(!props.status||task.status===props.status)&&(!props.phase||String(task.phase)===props.phase)&&(!props.person||taskPeople(task).has(props.person))&&(!props.dueView||(props.dueView==='overdue'?due.kind==='overdue':(typeof due.days==='number'&&due.days>=0&&due.days<=7)))
+  }).sort((a,b)=>Number(deadlineState(b).kind==='overdue'&&b.urgency==='高')-Number(deadlineState(a).kind==='overdue'&&a.urgency==='高')||a.id.localeCompare(b.id))
+  const phaseKeys=['','0','1','2','3','4','5','6'],phaseLabel=(value:string)=>value===''?'全体':`Phase ${value}`
+  const onPhaseKey=(event:React.KeyboardEvent,index:number)=>{let next=index;if(event.key==='ArrowRight')next=(index+1)%phaseKeys.length;else if(event.key==='ArrowLeft')next=(index-1+phaseKeys.length)%phaseKeys.length;else if(event.key==='Home')next=0;else if(event.key==='End')next=phaseKeys.length-1;else return;event.preventDefault();props.setPhase(phaseKeys[next]);phaseRefs.current[next]?.focus()}
+  const renderCards=(items:Task[])=>props.view==='kanban'?<div className={`task-grid ${props.phase==='5'?'phase5-grid':''}`}>{items.map((task)=><TaskCard key={task.id} task={task} tasks={props.tasks} phase5={task.phase===5} onEdit={props.onEdit} onDelete={props.onDelete} onStatus={props.onStatus}/>)}</div>:<div className="task-list">{items.map((task)=><TaskCard key={task.id} task={task} tasks={props.tasks} phase5={task.phase===5} onEdit={props.onEdit} onDelete={props.onDelete} onStatus={props.onStatus}/>)}</div>
+  return <section aria-labelledby="tasks-title">
+    <div className="phase-tabs" role="tablist" aria-label="Phaseフィルタ">{phaseKeys.map((value,index)=><button ref={(element)=>{phaseRefs.current[index]=element}} role="tab" aria-selected={props.phase===value} tabIndex={props.phase===value?0:-1} className={props.phase===value?'active':''} onKeyDown={(event)=>onPhaseKey(event,index)} onClick={()=>props.setPhase(value)} key={value||'all'}>{phaseLabel(value)}<small>{value===''?props.tasks.length:props.tasks.filter((task)=>String(task.phase)===value).length}</small></button>)}</div>
+    <div className="section-heading"><div><span className="eyebrow">MISSION CONTROL</span><h2 id="tasks-title">タスク進行表</h2><p>{filtered.length} / {props.tasks.length} 件を表示</p></div><button className="button primary" onClick={props.onAdd}><Plus size={17}/>新規タスク</button></div>
+    <div className="person-filters" aria-label="担当者フィルタ">{people.map((person)=>{const related=props.tasks.filter((task)=>taskPeople(task).has(person)),high=related.filter((task)=>task.urgency==='高'&&task.status!=='完了').length;return <button key={person} aria-pressed={props.person===person} onClick={()=>props.setPerson(props.person===person?'':person)}><span>{person}</span><small><b>{high}</b> 高 / {related.length}件</small></button>})}</div>
+    <div className="filters" role="search">
+      <label className="search" htmlFor="task-search"><Search size={16}/><span className="sr-only">タスクを検索</span><input id="task-search" value={props.search} onChange={(event)=>props.setSearch(event.target.value)} placeholder="ID・タスク・担当・出典を検索"/></label>
+      <select aria-label="チームで絞り込み" value={props.department} onChange={(event)=>props.setDepartment(event.target.value)}><option value="">13チームすべて</option>{organizationUnits.map((unit)=><option value={unit.id} key={unit.id}>{unit.name}</option>)}</select>
+      <select aria-label="状態で絞り込み" value={props.status} onChange={(event)=>props.setStatus(event.target.value)}><option value="">状態すべて</option>{statuses.map((value)=><option key={value}>{value}</option>)}</select>
+      <button aria-pressed={props.dueView==='soon'} onClick={()=>props.setDueView(props.dueView==='soon'?'':'soon')}><CalendarDays size={15}/>期限7日前</button>
+      <button aria-pressed={props.dueView==='overdue'} onClick={()=>props.setDueView(props.dueView==='overdue'?'':'overdue')}><AlertTriangle size={15}/>期限超過</button>
+    </div>
+    {filtered.length===0?<div className="empty"><Search/><h3>該当するタスクがありません</h3></div>:props.groupByTeam?<div className="team-groups">{organizationUnits.map((unit)=>{const items=filtered.filter((task)=>task.teamId===unit.id);if(!items.length)return null;const remaining=items.filter((task)=>task.status!=='完了').length,high=items.filter((task)=>task.urgency==='高'&&task.status!=='完了').length;return <section key={unit.id} className="team-group" aria-labelledby={`team-${unit.id}`}><header><div><span className="eyebrow">TEAM</span><h3 id={`team-${unit.id}`}>{unit.name}</h3></div><p>責任者 <b>{unit.owner}</b> · 未完了 {remaining}件 · 高緊急 {high}件</p></header>{renderCards(items)}</section>})}</div>:renderCards(filtered)}
+  </section>
 }

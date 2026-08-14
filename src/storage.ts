@@ -1,182 +1,135 @@
 import type { Edge, Node, Viewport } from '@xyflow/react'
-import { initialAudit, initialEdges, initialNodes, initialTasks, initialViewport } from './data'
-import { SOURCE_CATALOG, type SourceId } from './sourceCatalog'
-import {
-  assignmentStatuses, auditClassifications, dateStatuses, departmentIds, departmentName, departments, priorities, publicationStatuses, sourceConfidences, statuses,
-  type AuditItem, type ExportBundle, type FlowData, type LoadResult, type SourceRef, type Task, type ValidationIssue,
-} from './types'
+import { initialAudit, initialEdges, initialKpis, initialNodes, initialTasks, initialViewport } from './data'
+import { SOURCE_CATALOG } from './sourceCatalog'
+import { auditClassifications, departmentIdFor, departmentIds, departmentName, organizationUnits, people, sourceConfidences, statuses, urgencies, type AuditItem, type ExportBundle, type FlowData, type LoadResult, type Task, type ValidationIssue } from './types'
 
-export const KEYS = { bundle: 'nexus.bundle.v2', legacyTasks:'nexus.tasks.v1', legacyFlow:'nexus.flow.v1', legacyAudit:'nexus.audit.v1' } as const
-export const LIMITS = { fileBytes: 2_000_000, tasks: 500, nodes: 500, edges: 2_000, audit: 2_000 } as const
-const initialFlow: FlowData = { nodes: initialNodes, edges: initialEdges, viewport: initialViewport }
+export const KEYS={bundle:'nexus.bundle.v3',legacyBundle:'nexus.bundle.v2',legacyTasks:'nexus.tasks.v1',legacyFlow:'nexus.flow.v1',legacyAudit:'nexus.audit.v1'} as const
+export const LIMITS={fileBytes:2_000_000,tasks:500,nodes:500,edges:2_000,audit:2_000} as const
+const initialFlow:FlowData={nodes:initialNodes,edges:initialEdges,viewport:initialViewport}
+const now=()=>new Date().toISOString()
+const fallback=():ExportBundle=>({schemaVersion:3,exportedAt:now(),tasks:initialTasks,flow:initialFlow,audit:initialAudit,kpis:initialKpis,reportBaseline:null,migrationArchive:[]})
+const isObject=(value:unknown):value is Record<string,unknown>=>!!value&&typeof value==='object'&&!Array.isArray(value)
+const isIso=(value:unknown)=>typeof value==='string'&&/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(value)&&!Number.isNaN(Date.parse(value))
+const isDate=(value:unknown)=>typeof value==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(value)&&!Number.isNaN(Date.parse(`${value}T00:00:00Z`))
+const authoritativeById=new Map(initialTasks.map((task)=>[task.id,task]))
+const stringArray=(value:unknown)=>Array.isArray(value)&&value.length>0&&value.every((item)=>typeof item==='string'&&item.trim().length>0)
 
-const isObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value)
-const isIsoDateTime = (value: unknown) => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(value) && !Number.isNaN(Date.parse(value))
-const isDate = (value: unknown) => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`))
-const values = <T extends readonly string[]>(items: T, value: unknown): value is T[number] => typeof value === 'string' && items.includes(value)
-export const dependencyIds = (value: string) => value.split(',').map((item) => item.trim()).filter(Boolean)
-
-function validateSource(value: unknown, path: string, issues: ValidationIssue[]): value is SourceRef {
-  if (!isObject(value)) { issues.push({ path, message:'出典はオブジェクトである必要があります' }); return false }
-  const required = ['sourceId','fileName','sha256','lineStart','lineEnd','asOf','confidence']
-  required.forEach((key) => { if (!(key in value)) issues.push({ path:`${path}.${key}`, message:'必須項目です' }) })
-  if (!values(['S1','S2','S3'] as const,value.sourceId)) issues.push({path:`${path}.sourceId`,message:'S1/S2/S3のいずれかが必要です'})
-  if (typeof value.fileName !== 'string' || !value.fileName) issues.push({path:`${path}.fileName`,message:'空でない文字列が必要です'})
-  if (typeof value.sha256 !== 'string' || !/^[A-F0-9]{64}$/.test(value.sha256)) issues.push({path:`${path}.sha256`,message:'64桁のSHA-256（大文字）が必要です'})
-  if (!Number.isInteger(value.lineStart) || Number(value.lineStart) < 1) issues.push({path:`${path}.lineStart`,message:'1以上の整数が必要です'})
-  if (!Number.isInteger(value.lineEnd) || Number(value.lineEnd) < Number(value.lineStart)) issues.push({path:`${path}.lineEnd`,message:'lineStart以上の整数が必要です'})
-  if (!isDate(value.asOf)) issues.push({path:`${path}.asOf`,message:'YYYY-MM-DD形式が必要です'})
-  if (!values(sourceConfidences,value.confidence)) issues.push({path:`${path}.confidence`,message:'許可されていない確度です'})
-  if(values(['S1','S2','S3'] as const,value.sourceId)){
-    const expected=SOURCE_CATALOG[value.sourceId as SourceId]
-    if(value.fileName!==expected.fileName)issues.push({path:`${path}.fileName`,message:'sourceIdに対応する正式ファイル名と一致しません'})
-    if(value.sha256!==expected.sha256)issues.push({path:`${path}.sha256`,message:'sourceIdに対応する正式SHA-256と一致しません'})
-    if(value.asOf!==expected.asOf)issues.push({path:`${path}.asOf`,message:'sourceIdに対応する基準日と一致しません'})
-    if(Number.isInteger(value.lineEnd)&&Number(value.lineEnd)>expected.maxLine)issues.push({path:`${path}.lineEnd`,message:`${value.sourceId}の最大行${expected.maxLine}を超えています`})
-  }
-  return true
-}
-
-function validateTaskShape(value: unknown, index: number, issues: ValidationIssue[]): value is Task {
+function validateTask(value:unknown,index:number,issues:ValidationIssue[]):value is Task{
   const path=`tasks[${index}]`
-  if (!isObject(value)) { issues.push({path,message:'タスクはオブジェクトである必要があります'}); return false }
-  const strings=['id','title','description','departmentId','department','owner','assignmentStatus','timing','dateStatus','publicationStatus','asOf','priority','status','dependencies','risk','updatedAt']
-  strings.forEach((key)=>{if(typeof value[key] !== 'string')issues.push({path:`${path}.${key}`,message:'文字列の必須項目です'})})
-  if(typeof value.id==='string'&&!/^T-\d{3,}$/.test(value.id))issues.push({path:`${path}.id`,message:'T-001形式が必要です'})
-  if(typeof value.title==='string'&&!value.title.trim())issues.push({path:`${path}.title`,message:'空にできません'})
-  if(!values(departmentIds,value.departmentId))issues.push({path:`${path}.departmentId`,message:'安定組織IDが不正です'})
-  if(!values(departments,value.department))issues.push({path:`${path}.department`,message:'正規表示名が不正です'})
-  if(values(departmentIds,value.departmentId) && values(departments,value.department)) {
-    const expected=departments[departmentIds.indexOf(value.departmentId)]; if(expected!==value.department)issues.push({path:`${path}.department`,message:'組織IDと表示名が一致しません'})
-  }
-  if(!values(assignmentStatuses,value.assignmentStatus))issues.push({path:`${path}.assignmentStatus`,message:'列挙値が不正です'})
-  if(!values(dateStatuses,value.dateStatus))issues.push({path:`${path}.dateStatus`,message:'列挙値が不正です'})
-  if(!values(publicationStatuses,value.publicationStatus))issues.push({path:`${path}.publicationStatus`,message:'列挙値が不正です'})
-  if(!values(priorities,value.priority))issues.push({path:`${path}.priority`,message:'列挙値が不正です'})
-  if(!values(statuses,value.status))issues.push({path:`${path}.status`,message:'列挙値が不正です'})
-  if(!isDate(value.asOf))issues.push({path:`${path}.asOf`,message:'YYYY-MM-DD形式が必要です'})
-  if(!isIsoDateTime(value.updatedAt))issues.push({path:`${path}.updatedAt`,message:'ISO日時が必要です'})
-  if(!Array.isArray(value.conflictingSourceRefs)||value.conflictingSourceRefs.some((item)=>typeof item!=='string'))issues.push({path:`${path}.conflictingSourceRefs`,message:'文字列配列が必要です'})
-  if(!Array.isArray(value.sources)||value.sources.length===0)issues.push({path:`${path}.sources`,message:'1件以上の出典が必要です'})
-  else value.sources.forEach((item,i)=>validateSource(item,`${path}.sources[${i}]`,issues))
+  if(!isObject(value)){issues.push({path,message:'タスクはオブジェクトである必要があります'});return false}
+  for(const field of ['id','title','teamId','team','rawTeam','owner','rawAssignees','urgency','deadline','status','holdReason','updatedAt'] as const)if(typeof value[field]!=='string')issues.push({path:`${path}.${field}`,message:'文字列の必須項目です'})
+  if(typeof value.id==='string'&&!/^P[0-6]-\d{2}$/.test(value.id))issues.push({path:`${path}.id`,message:'P0-01形式が必要です'})
+  if(!Number.isInteger(value.phase)||Number(value.phase)<0||Number(value.phase)>6)issues.push({path:`${path}.phase`,message:'0〜6の整数が必要です'})
+  if(typeof value.id==='string'&&Number(value.id[1])!==value.phase)issues.push({path:`${path}.phase`,message:'IDのPhaseと一致しません'})
+  if(!departmentIds.includes(value.teamId as never))issues.push({path:`${path}.teamId`,message:'13チームの安定IDが必要です'})
+  else if(value.team!==departmentName(value.teamId as Task['teamId']))issues.push({path:`${path}.team`,message:'安定IDの正式表示名と一致しません'})
+  if(typeof value.rawTeam==='string'){const mapped=departmentIdFor(value.rawTeam);if(!mapped)issues.push({path:`${path}.rawTeam`,message:'未知の原文チーム名です'});else if(mapped!==value.teamId)issues.push({path:`${path}.rawTeam`,message:'原文チーム名と安定IDが一致しません'})}
+  if(!urgencies.includes(value.urgency as never))issues.push({path:`${path}.urgency`,message:'高/中/低が必要です'})
+  if(!statuses.includes(value.status as never))issues.push({path:`${path}.status`,message:'未着手/進行中/完了/保留が必要です'})
+  if(value.status==='保留'&&typeof value.holdReason==='string'&&!value.holdReason.replace(/[\s\u200B-\u200D\uFEFF]/g,'').length)issues.push({path:`${path}.holdReason`,message:'保留理由は必須です'})
+  if(value.deadlineDate!==undefined&&!isDate(value.deadlineDate))issues.push({path:`${path}.deadlineDate`,message:'YYYY-MM-DD形式が必要です'})
+  for(const field of ['assignees','personKeys','dependencies','notes','sourceRefs'] as const)if(!Array.isArray(value[field]))issues.push({path:`${path}.${field}`,message:'配列が必要です'})
+  if(Array.isArray(value.assignees)&&value.assignees.some((item)=>typeof item!=='string'||!item.trim()))issues.push({path:`${path}.assignees`,message:'空でない文字列配列が必要です'})
+  if(Array.isArray(value.personKeys)&&(value.personKeys.some((item)=>typeof item!=='string'||!people.includes(item as never))||new Set(value.personKeys).size!==value.personKeys.length))issues.push({path:`${path}.personKeys`,message:'主要8名の一意な検索キーが必要です'})
+  if(typeof value.rawAssignees==='string'&&Array.isArray(value.assignees)){const expectedAssignees=value.rawAssignees.split(/[、,]/).map((item)=>item.trim()).filter(Boolean);if(JSON.stringify(expectedAssignees)!==JSON.stringify(value.assignees))issues.push({path:`${path}.assignees`,message:'原文担当文字列と担当配列が一致しません'})}
+  if(typeof value.rawAssignees==='string'&&Array.isArray(value.personKeys)){const rawAssignees=value.rawAssignees,expectedKeys=rawAssignees.includes('全員')?[...people]:people.filter((person)=>rawAssignees.includes(person));if(JSON.stringify(expectedKeys)!==JSON.stringify(value.personKeys))issues.push({path:`${path}.personKeys`,message:'原文担当から導出した検索キーと一致しません'})}
+  if(Array.isArray(value.dependencies)&&value.dependencies.some((item)=>typeof item!=='string'))issues.push({path:`${path}.dependencies`,message:'文字列配列が必要です'})
+  if(!isIso(value.updatedAt))issues.push({path:`${path}.updatedAt`,message:'ISO日時が必要です'})
+  if(Array.isArray(value.sourceRefs)&&value.sourceRefs.length===0)issues.push({path:`${path}.sourceRefs`,message:'1件以上の出典が必要です'})
+  if(Array.isArray(value.sourceRefs))value.sourceRefs.forEach((ref,sourceIndex)=>{
+    const sourcePath=`${path}.sourceRefs[${sourceIndex}]`
+    if(!isObject(ref)){issues.push({path:sourcePath,message:'出典はオブジェクトです'});return}
+    const catalog=SOURCE_CATALOG[ref.sourceId as keyof typeof SOURCE_CATALOG]
+    if(!catalog)issues.push({path:`${sourcePath}.sourceId`,message:'catalogにない出典です'})
+    else {
+      if(ref.fileName!==catalog.fileName||ref.sha256!==catalog.sha256||ref.asOf!==catalog.asOf)issues.push({path:sourcePath,message:'catalogメタデータと一致しません'})
+      if(!Number.isInteger(ref.lineStart)||!Number.isInteger(ref.lineEnd)||Number(ref.lineStart)<1||Number(ref.lineEnd)<Number(ref.lineStart)||Number(ref.lineEnd)>catalog.maxLine)issues.push({path:sourcePath,message:'行範囲が不正です'})
+      if(!sourceConfidences.includes(ref.confidence as never))issues.push({path:`${sourcePath}.confidence`,message:'確度が不正です'})
+    }
+  })
+  const expected=typeof value.id==='string'?authoritativeById.get(value.id):undefined
+  if(expected&&Array.isArray(value.sourceRefs)){const expectedSource=expected.sourceRefs[0],hasExpected=value.sourceRefs.some((ref)=>isObject(ref)&&ref.sourceId==='S4'&&ref.sha256===expectedSource.sha256&&ref.lineStart===expectedSource.lineStart&&ref.lineEnd===expectedSource.lineEnd);if(!hasExpected)issues.push({path:`${path}.sourceRefs`,message:'正本IDに対応するS4行参照が必要です'})}
   return true
 }
 
-function validateGraph(tasks: Task[], issues: ValidationIssue[]) {
-  const ids=new Set(tasks.map((task)=>task.id))
-  tasks.forEach((task,index)=>{
-    const deps=dependencyIds(task.dependencies)
-    if(new Set(deps).size!==deps.length)issues.push({path:`tasks[${index}].dependencies`,message:'依存IDが重複しています'})
-    if(deps.includes(task.id))issues.push({path:`tasks[${index}].dependencies`,message:'自己参照はできません'})
-    deps.forEach((id)=>{if(!ids.has(id))issues.push({path:`tasks[${index}].dependencies`,message:`存在しない依存ID: ${id}`})})
-  })
-  const visiting=new Set<string>(),visited=new Set<string>(),byId=new Map(tasks.map((task)=>[task.id,task]))
-  const visit=(id:string):boolean=>{if(visiting.has(id))return true;if(visited.has(id))return false;visiting.add(id);const cycle=dependencyIds(byId.get(id)?.dependencies??'').some((dep)=>byId.has(dep)&&visit(dep));visiting.delete(id);visited.add(id);return cycle}
+function validateGraph(tasks:Task[],issues:ValidationIssue[]){
+  const ids=new Set(tasks.map((task)=>task.id)),byId=new Map(tasks.map((task)=>[task.id,task]))
+  tasks.forEach((task,index)=>{if(new Set(task.dependencies).size!==task.dependencies.length)issues.push({path:`tasks[${index}].dependencies`,message:'依存IDが重複しています'});task.dependencies.forEach((id)=>{if(id===task.id)issues.push({path:`tasks[${index}].dependencies`,message:'自己参照はできません'});else if(!ids.has(id))issues.push({path:`tasks[${index}].dependencies`,message:`存在しない依存ID: ${id}`})})})
+  const visiting=new Set<string>(),visited=new Set<string>()
+  const visit=(id:string):boolean=>{if(visiting.has(id))return true;if(visited.has(id))return false;visiting.add(id);const cycle=(byId.get(id)?.dependencies??[]).some(visit);visiting.delete(id);visited.add(id);return cycle}
   tasks.forEach((task,index)=>{if(visit(task.id))issues.push({path:`tasks[${index}].dependencies`,message:'循環依存があります'})})
 }
 
-const validPosition=(value:unknown)=>isObject(value)&&typeof value.x==='number'&&Number.isFinite(value.x)&&typeof value.y==='number'&&Number.isFinite(value.y)
-function validateFlow(value: unknown, issues: ValidationIssue[]): value is FlowData {
-  if(!isObject(value)){issues.push({path:'flow',message:'フローはオブジェクトである必要があります'});return false}
-  if(!Array.isArray(value.nodes)){issues.push({path:'flow.nodes',message:'配列が必要です'});return false}
-  if(!Array.isArray(value.edges)){issues.push({path:'flow.edges',message:'配列が必要です'});return false}
-  if(value.nodes.length>LIMITS.nodes)issues.push({path:'flow.nodes',message:`最大${LIMITS.nodes}件です`})
-  if(value.edges.length>LIMITS.edges)issues.push({path:'flow.edges',message:`最大${LIMITS.edges}件です`})
-  const nodes=value.nodes as unknown[],edges=value.edges as unknown[]
-  const nodeIds:string[]=[],edgeIds:string[]=[]
-  nodes.forEach((node,index)=>{if(!isObject(node)||typeof node.id!=='string'||!node.id||!validPosition(node.position)||!isObject(node.data)){issues.push({path:`flow.nodes[${index}]`,message:'id/position/dataが必要です'});return}nodeIds.push(node.id)})
-  edges.forEach((edge,index)=>{if(!isObject(edge)||typeof edge.id!=='string'||!edge.id||typeof edge.source!=='string'||typeof edge.target!=='string'){issues.push({path:`flow.edges[${index}]`,message:'id/source/targetが必要です'});return}edgeIds.push(edge.id)})
-  if(new Set(nodeIds).size!==nodeIds.length)issues.push({path:'flow.nodes',message:'ノードIDが重複しています'})
+function validateFlow(value:unknown,issues:ValidationIssue[],validTaskIds:Set<string>):value is FlowData{
+  if(!isObject(value)||!Array.isArray(value.nodes)||!Array.isArray(value.edges)||!isObject(value.viewport)){issues.push({path:'flow',message:'nodes/edges/viewportが必要です'});return false}
+  if(value.nodes.length>LIMITS.nodes||value.edges.length>LIMITS.edges)issues.push({path:'flow',message:'件数上限を超えています'})
+  const ids:string[]=[];(value.nodes as unknown[]).forEach((node,index)=>{if(!isObject(node)||typeof node.id!=='string'||!node.id||!isObject(node.position)||typeof node.position.x!=='number'||!Number.isFinite(node.position.x)||typeof node.position.y!=='number'||!Number.isFinite(node.position.y)||!isObject(node.data))issues.push({path:`flow.nodes[${index}]`,message:'id/finite position/dataが必要です'});else{ids.push(node.id);const refs=node.data.taskIds;if(refs!==undefined&&(!Array.isArray(refs)||refs.some((id)=>typeof id!=='string'||!validTaskIds.has(id))))issues.push({path:`flow.nodes[${index}].data.taskIds`,message:'存在しないタスク参照があります'})}})
+  const idSet=new Set(ids);if(idSet.size!==ids.length)issues.push({path:'flow.nodes',message:'ノードIDが重複しています'})
+  const edgeIds:string[]=[];(value.edges as unknown[]).forEach((edge,index)=>{if(!isObject(edge)||typeof edge.id!=='string'||!edge.id||typeof edge.source!=='string'||typeof edge.target!=='string'||!idSet.has(String(edge.source))||!idSet.has(String(edge.target))||edge.source===edge.target)issues.push({path:`flow.edges[${index}]`,message:'接続が不正です'});else edgeIds.push(edge.id)})
   if(new Set(edgeIds).size!==edgeIds.length)issues.push({path:'flow.edges',message:'エッジIDが重複しています'})
-  const nodeSet=new Set(nodeIds);edges.forEach((edge,index)=>{if(isObject(edge)&&(!nodeSet.has(String(edge.source))||!nodeSet.has(String(edge.target))))issues.push({path:`flow.edges[${index}]`,message:'接続先ノードが存在しません'});if(isObject(edge)&&edge.source===edge.target)issues.push({path:`flow.edges[${index}]`,message:'自己接続はできません'})})
-  if(!isObject(value.viewport)||typeof value.viewport.x!=='number'||typeof value.viewport.y!=='number'||typeof value.viewport.zoom!=='number'||value.viewport.zoom<=0)issues.push({path:'flow.viewport',message:'x/y/正のzoomが必要です'})
+  if(typeof value.viewport.x!=='number'||!Number.isFinite(value.viewport.x)||typeof value.viewport.y!=='number'||!Number.isFinite(value.viewport.y)||typeof value.viewport.zoom!=='number'||!Number.isFinite(value.viewport.zoom)||Number(value.viewport.zoom)<=0)issues.push({path:'flow.viewport',message:'finite x/y/正のzoomが必要です'})
   return true
 }
 
-function validateAudit(value: unknown, issues: ValidationIssue[]): value is AuditItem[] {
-  if(!Array.isArray(value)){issues.push({path:'audit',message:'配列が必要です'});return false}
-  if(value.length>LIMITS.audit)issues.push({path:'audit',message:`最大${LIMITS.audit}件です`})
-  const requiredStrings=['id','issueId','targetVersion','before','after','retest','residualRisk','action','detail']
+function validateAudit(value:unknown,issues:ValidationIssue[]){
+  if(!Array.isArray(value)){issues.push({path:'audit',message:'監査ログ配列が必要です'});return}
+  if(value.length>LIMITS.audit)issues.push({path:'audit',message:'監査ログ件数上限を超えています'})
   const ids:string[]=[]
-  value.forEach((item,index)=>{
-    const path=`audit[${index}]`;if(!isObject(item)){issues.push({path,message:'オブジェクトが必要です'});return}
-    requiredStrings.forEach((key)=>{if(typeof item[key]!=='string'||!String(item[key]).trim())issues.push({path:`${path}.${key}`,message:'空でない文字列の必須項目です'})})
-    if(typeof item.id==='string')ids.push(item.id)
-    if(typeof item.issueId==='string'&&!/^[A-Z0-9]+-[A-Z0-9-]+$/.test(item.issueId))issues.push({path:`${path}.issueId`,message:'監査指摘ID形式が不正です'})
-    if(!values(auditClassifications,item.classification))issues.push({path:`${path}.classification`,message:'監査分類の列挙値が不正です'})
-    if(typeof item.targetVersion==='string'&&!/^\d+\.\d+\.\d+$/.test(item.targetVersion))issues.push({path:`${path}.targetVersion`,message:'semver形式が必要です'})
-    if(!isIsoDateTime(item.at))issues.push({path:`${path}.at`,message:'ISO日時が必要です'})
-    if(!Number.isInteger(item.round)||Number(item.round)<1)issues.push({path:`${path}.round`,message:'1以上の整数が必要です'})
-    for(const key of ['files','evidence'] as const)if(!Array.isArray(item[key])||item[key].some((entry)=>typeof entry!=='string'||!entry.trim()))issues.push({path:`${path}.${key}`,message:'空でない文字列配列が必要です'})
-  })
+  value.forEach((item,index)=>{const path=`audit[${index}]`;if(!isObject(item)){issues.push({path,message:'監査ログはオブジェクトです'});return}for(const field of ['id','issueId','targetVersion','before','after','retest','residualRisk','action','detail'] as const)if(typeof item[field]!=='string'||!String(item[field]).trim())issues.push({path:`${path}.${field}`,message:'空でない文字列が必要です'});if(typeof item.id==='string')ids.push(item.id);if(!auditClassifications.includes(item.classification as never))issues.push({path:`${path}.classification`,message:'監査分類が不正です'});if(typeof item.targetVersion==='string'&&!/^\d+\.\d+\.\d+$/.test(item.targetVersion))issues.push({path:`${path}.targetVersion`,message:'semverが必要です'});if(!isIso(item.at))issues.push({path:`${path}.at`,message:'ISO日時が必要です'});if(!Number.isInteger(item.round)||Number(item.round)<1)issues.push({path:`${path}.round`,message:'1以上の整数が必要です'});for(const field of ['files','evidence'] as const)if(!stringArray(item[field]))issues.push({path:`${path}.${field}`,message:'空でない文字列配列が必要です'})})
   if(new Set(ids).size!==ids.length)issues.push({path:'audit',message:'監査ログIDが重複しています'})
-  return true
 }
 
-export function validateBundle(value: unknown): ValidationIssue[] {
+export function validateBundle(value:unknown):ValidationIssue[]{
   const issues:ValidationIssue[]=[]
-  if(!isObject(value))return [{path:'$',message:'JSONルートはオブジェクトである必要があります'}]
-  if(value.schemaVersion!==2)issues.push({path:'schemaVersion',message:'対応バージョンは2です'})
-  if(!isIsoDateTime(value.exportedAt))issues.push({path:'exportedAt',message:'ISO日時が必要です'})
+  if(!isObject(value))return[{path:'$',message:'JSONルートはオブジェクトです'}]
+  if(value.schemaVersion!==3)issues.push({path:'schemaVersion',message:'対応バージョンは3です'})
+  if(!isIso(value.exportedAt))issues.push({path:'exportedAt',message:'ISO日時が必要です'})
   if(!Array.isArray(value.tasks))issues.push({path:'tasks',message:'配列が必要です'})
-  else {
-    if(value.tasks.length>LIMITS.tasks)issues.push({path:'tasks',message:`最大${LIMITS.tasks}件です`})
-    value.tasks.forEach((task,index)=>validateTaskShape(task,index,issues))
-    const tasks=value.tasks as Task[]
-    const ids=tasks.map((task)=>task.id);if(new Set(ids).size!==ids.length)issues.push({path:'tasks',message:'タスクIDが重複しています'})
-    validateGraph(tasks,issues)
-  }
-  validateFlow(value.flow,issues)
+  else {if(value.tasks.length>LIMITS.tasks)issues.push({path:'tasks',message:'件数上限を超えています'});value.tasks.forEach((task,index)=>validateTask(task,index,issues));const tasks=value.tasks as Task[],ids=tasks.map((task)=>task.id);if(new Set(ids).size!==ids.length)issues.push({path:'tasks',message:'タスクIDが重複しています'});validateGraph(tasks,issues)}
+  const validTaskIds=new Set<string>(Array.isArray(value.tasks)?(value.tasks as unknown[]).filter(isObject).map((task)=>String(task.id)):[])
+  if(Array.isArray(value.migrationArchive))value.migrationArchive.forEach((archive)=>{if(isObject(archive)&&Array.isArray(archive.tasks))archive.tasks.forEach((task)=>{if(isObject(task)&&typeof task.id==='string')validTaskIds.add(task.id)})})
+  validateFlow(value.flow,issues,validTaskIds)
   validateAudit(value.audit,issues)
-  if(Array.isArray(value.tasks)&&isObject(value.flow)&&Array.isArray(value.flow.nodes)){
-    const taskIds=new Set((value.tasks as Task[]).map((task)=>task.id))
-    ;(value.flow.nodes as Node[]).forEach((node,index)=>{const refs=(node.data as {taskIds?:unknown}).taskIds;if(refs!==undefined&&(!Array.isArray(refs)||refs.some((id)=>typeof id!=='string'||!taskIds.has(id))))issues.push({path:`flow.nodes[${index}].data.taskIds`,message:'存在しないタスク参照があります'})})
-  }
+  if(!Array.isArray(value.kpis)||value.kpis.some((kpi)=>!isObject(kpi)||typeof kpi.id!=='string'||typeof kpi.target!=='number'||!Number.isFinite(kpi.target)||kpi.target<0||!(kpi.actual===null||(typeof kpi.actual==='number'&&Number.isFinite(kpi.actual)&&kpi.actual>=0))))issues.push({path:'kpis',message:'KPIはfiniteかつ0以上である必要があります'})
+  if(!(value.reportBaseline===null||(isObject(value.reportBaseline)&&isIso(value.reportBaseline.savedAt)&&isObject(value.reportBaseline.statuses))))issues.push({path:'reportBaseline',message:'比較基準が不正です'})
+  else if(isObject(value.reportBaseline))Object.entries(value.reportBaseline.statuses as Record<string,unknown>).forEach(([id,entry])=>{if(!isObject(entry)||!statuses.includes(entry.status as never)||!isIso(entry.updatedAt))issues.push({path:`reportBaseline.statuses.${id}`,message:'statusとupdatedAtが不正です'})})
+  if(!Array.isArray(value.migrationArchive))issues.push({path:'migrationArchive',message:'移行アーカイブ配列が必要です'})
+  else value.migrationArchive.forEach((archive,index)=>{if(!isObject(archive)||!Number.isInteger(archive.fromSchema)||!isIso(archive.migratedAt)||typeof archive.reason!=='string'||!archive.reason.trim()||!Array.isArray(archive.tasks))issues.push({path:`migrationArchive[${index}]`,message:'移行メタデータが不正です'})})
   return issues
 }
-
 export const isBundle=(value:unknown):value is ExportBundle=>validateBundle(value).length===0
-export function validateTaskCandidate(candidate:Task,current:Task[]):ValidationIssue[]{
-  const tasks=current.some((item)=>item.id===candidate.id)?current.map((item)=>item.id===candidate.id?candidate:item):[candidate,...current],candidateIndex=tasks.findIndex((item)=>item.id===candidate.id),path=`tasks[${candidateIndex}]`,issues:ValidationIssue[]=[]
-  validateTaskShape(candidate,candidateIndex,issues)
-  const ids=tasks.map((task)=>task.id),idSet=new Set(ids),deps=dependencyIds(candidate.dependencies)
-  if(ids.filter((id)=>id===candidate.id).length>1)issues.push({path:'id',message:'タスクIDが重複しています'})
-  if(new Set(deps).size!==deps.length)issues.push({path:`${path}.dependencies`,message:'依存IDが重複しています'})
-  if(deps.includes(candidate.id))issues.push({path:`${path}.dependencies`,message:'自己参照はできません'})
-  deps.forEach((id)=>{if(!idSet.has(id))issues.push({path:`${path}.dependencies`,message:`存在しない依存ID: ${id}`})})
-  const byId=new Map(tasks.map((task)=>[task.id,task])),visiting=new Set<string>(),visited=new Set<string>()
-  const reachesCycle=(id:string):boolean=>{if(visiting.has(id))return true;if(visited.has(id))return false;visiting.add(id);const cycle=dependencyIds(byId.get(id)?.dependencies??'').some((dep)=>byId.has(dep)&&reachesCycle(dep));visiting.delete(id);visited.add(id);return cycle}
-  if(reachesCycle(candidate.id))issues.push({path:`${path}.dependencies`,message:'循環依存があります'})
-  return issues
-}
 
-function migrateBundle(value:unknown):{value:unknown;changed:boolean}{
-  if(!isObject(value)||value.schemaVersion!==2||!Array.isArray(value.tasks))return{value,changed:false}
-  let changed=false
-  const tasks=value.tasks.map((task)=>{if(!isObject(task)||!values(departmentIds,task.departmentId))return task;const expected=departmentName(task.departmentId);if(task.department===expected)return task;changed=true;return{...task,department:expected}})
-  return changed?{value:{...value,tasks},changed}:{value,changed:false}
+function migrate(value:unknown):{bundle:ExportBundle;changed:boolean}|null{
+  if(!isObject(value))return null
+  if(value.schemaVersion===3){
+    const bundle=value as unknown as ExportBundle
+    const savedIds=new Set(Array.isArray(bundle.tasks)?bundle.tasks.map((task)=>task.id):[]),missing=initialTasks.filter((task)=>!savedIds.has(task.id))
+    return {bundle:missing.length?{...bundle,tasks:[...bundle.tasks,...missing],exportedAt:now()}:bundle,changed:missing.length>0}
+  }
+  if(value.schemaVersion===2&&Array.isArray(value.tasks)){
+    const flow=isObject(value.flow)?value.flow as unknown as FlowData:initialFlow
+    const audit=Array.isArray(value.audit)?value.audit as AuditItem[]:[]
+    return {changed:true,bundle:{schemaVersion:3,exportedAt:now(),tasks:initialTasks,flow,audit:[...initialAudit,...audit],kpis:initialKpis,reportBaseline:null,migrationArchive:[{fromSchema:2,migratedAt:now(),reason:'旧39件を重複表示せず、S4の73件を正本化',tasks:value.tasks}]}}
+  }
+  return null
 }
 
 export function readBundle():LoadResult<ExportBundle>{
-  const fallback:ExportBundle={schemaVersion:2,exportedAt:new Date().toISOString(),tasks:initialTasks,flow:initialFlow,audit:initialAudit}
-  let raw:string|null
-  try{raw=localStorage.getItem(KEYS.bundle)}catch(error){return{ok:false,value:fallback,error:`保存データを取得できません: ${error instanceof Error?error.message:'不明なエラー'}`}}
-  if(raw===null)return{ok:true,value:fallback}
-  try{const parsed:unknown=JSON.parse(raw),migrated=migrateBundle(parsed);const issues=validateBundle(migrated.value);if(issues.length)return{ok:false,value:fallback,error:`保存データが不正です: ${issues[0].path} ${issues[0].message}`,raw};if(migrated.changed){try{localStorage.setItem(KEYS.bundle,JSON.stringify(migrated.value))}catch(error){return{ok:false,value:migrated.value as ExportBundle,error:`部署名を移行しましたが保存できません: ${error instanceof Error?error.message:'不明なエラー'}`,raw}}}return{ok:true,value:migrated.value as ExportBundle,raw}}
-  catch(error){return{ok:false,value:fallback,error:`保存データを読み込めません: ${error instanceof Error?error.message:'不明なエラー'}`,raw}}
+  const clean=fallback();let raw:string|null
+  try{raw=localStorage.getItem(KEYS.bundle);if(raw===null)raw=localStorage.getItem(KEYS.legacyBundle)}catch(error){return{ok:false,value:clean,error:`保存データを取得できません: ${error instanceof Error?error.message:'不明なエラー'}`}}
+  if(raw===null)return{ok:true,value:clean}
+  try{const migrated=migrate(JSON.parse(raw));if(!migrated)return{ok:false,value:clean,error:'保存データのschemaに対応していません',raw};const issues=validateBundle(migrated.bundle);if(issues.length)return{ok:false,value:clean,error:`保存データが不正です: ${issues[0].path} ${issues[0].message}`,raw};if(migrated.changed)localStorage.setItem(KEYS.bundle,JSON.stringify(migrated.bundle));return{ok:true,value:migrated.bundle,raw}}
+  catch(error){return{ok:false,value:clean,error:`保存データを読み込めません: ${error instanceof Error?error.message:'不明なエラー'}`,raw}}
 }
 export function saveBundle(bundle:ExportBundle):LoadResult<ExportBundle>{try{const issues=validateBundle(bundle);if(issues.length)return{ok:false,value:bundle,error:`保存前検証エラー: ${issues[0].path} ${issues[0].message}`};localStorage.setItem(KEYS.bundle,JSON.stringify(bundle));return{ok:true,value:bundle}}catch(error){return{ok:false,value:bundle,error:`保存できません: ${error instanceof Error?error.message:'不明なエラー'}`}}}
-export function parseImport(text:string):LoadResult<ExportBundle>{
-  const fallback:ExportBundle={schemaVersion:2,exportedAt:new Date().toISOString(),tasks:initialTasks,flow:initialFlow,audit:initialAudit}
-  if(new Blob([text]).size>LIMITS.fileBytes)return{ok:false,value:fallback,error:`ファイルサイズ上限${LIMITS.fileBytes} bytesを超えています`}
-  try{const parsed:unknown=JSON.parse(text),migrated=migrateBundle(parsed);const issues=validateBundle(migrated.value);return issues.length?{ok:false,value:fallback,error:issues.slice(0,5).map((issue)=>`${issue.path}: ${issue.message}`).join(' / ')}:{ok:true,value:migrated.value as ExportBundle}}
-  catch(error){return{ok:false,value:fallback,error:`JSON構文エラー: ${error instanceof Error?error.message:'不明なエラー'}`}}
-}
-export const resetBundle=()=>saveBundle({schemaVersion:2,exportedAt:new Date().toISOString(),tasks:initialTasks,flow:initialFlow,audit:initialAudit})
+export function parseImport(text:string):LoadResult<ExportBundle>{const clean=fallback();if(new Blob([text]).size>LIMITS.fileBytes)return{ok:false,value:clean,error:`ファイルサイズ上限${LIMITS.fileBytes} bytesを超えています`};try{const migrated=migrate(JSON.parse(text));if(!migrated)return{ok:false,value:clean,error:'schemaVersion 2または3のみ読み込めます'};const issues=validateBundle(migrated.bundle);return issues.length?{ok:false,value:clean,error:issues.slice(0,5).map((issue)=>`${issue.path}: ${issue.message}`).join(' / ')}:{ok:true,value:migrated.bundle}}catch(error){return{ok:false,value:clean,error:`JSON構文エラー: ${error instanceof Error?error.message:'不明なエラー'}`}}}
+export function validateTaskCandidate(candidate:Task,current:Task[]):ValidationIssue[]{const tasks=current.some((task)=>task.id===candidate.id)?current.map((task)=>task.id===candidate.id?candidate:task):[candidate,...current];return validateBundle({...fallback(),tasks}).filter((issue)=>issue.path.startsWith('tasks'))}
+export const resetBundle=()=>saveBundle(fallback())
 export const loadTasks=()=>readBundle().value.tasks
 export const loadFlow=()=>readBundle().value.flow
 export const loadAudit=()=>readBundle().value.audit
-export const saveTasks=(tasks:Task[])=>saveBundle({...readBundle().value,tasks,exportedAt:new Date().toISOString()})
-export const saveFlow=(flow:FlowData)=>saveBundle({...readBundle().value,flow,exportedAt:new Date().toISOString()})
-export const saveAudit=(audit:AuditItem[])=>saveBundle({...readBundle().value,audit,exportedAt:new Date().toISOString()})
-export type { Edge, Node, Viewport }
+export const saveTasks=(tasks:Task[])=>saveBundle({...readBundle().value,tasks,exportedAt:now()})
+export const saveFlow=(flow:FlowData)=>saveBundle({...readBundle().value,flow,exportedAt:now()})
+export const saveAudit=(audit:AuditItem[])=>saveBundle({...readBundle().value,audit,exportedAt:now()})
+export { organizationUnits }
+export type { Edge,Node,Viewport }

@@ -14,6 +14,6 @@ it('labels current operation history truthfully without claiming a retest',async
   vi.resetModules()
   const {createOperationAuditEntry}=await import('./operationAudit')
   const entry=createOperationAuditEntry('OP-TEST','runtime','テスト操作','保存内容',['src/App.tsx'],'before','after','2026-08-14T20:50:00+09:00')
-  expect(entry).toMatchObject({issueId:'OP-TEST',targetVersion:'0.2.1',round:2,retest:'未実施（操作時点）',action:'操作履歴 · テスト操作',at:'2026-08-14T20:50:00+09:00'})
+  expect(entry).toMatchObject({issueId:'OP-TEST',targetVersion:'0.3.0',round:3,retest:'未実施（操作時点）',action:'操作履歴 · テスト操作',at:'2026-08-14T20:50:00+09:00'})
   expect(entry.detail).toContain('監査指摘の修正ではない')
 })
