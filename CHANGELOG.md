@@ -1,0 +1,31 @@
+# Changelog
+
+## 2026-08-14 — 0.2.0 / 反証監査 Round 1
+
+| ID | 分類 | 対象ファイル | before | after | 再試験 | 残留リスク |
+| --- | --- | --- | --- | --- | --- | --- |
+| R1-M01 | 再現性 | `docs/verification/file-hashes.txt` | コミット以外の再現情報なし | 対象ファイルSHA-256と検証日時を記録 | ハッシュ生成 | コミットは秘書担当 |
+| R1-M02 | データ | `src/data.ts` | T-014/T-026の意味が誤り | 指定文言と意味へ訂正 | unit/E2E表示 | 入力内容自体は要再確認 |
+| R1-M03 | データ/UI | `src/types.ts`, `src/data.ts`, `TaskModal.tsx`, `TaskBoard.tsx` | 未確定情報が自由文のみ | assignmentStatus/dateStatus/publicationStatus/asOf/conflictingSourceRefsを表示・編集 | UI/a11y/E2E | 責任者による確定待ち |
+| R1-M04 | 出典 | `src/types.ts`, `src/data.ts`, `storage.ts` | 出典が単一文字列 | S1/S2/S3のSHA-256、実行範囲、基準日、確度を配列化 | unit完全検証 | 行範囲は入力ファイル現版に依存 |
+| R1-M05 | 網羅性 | `src/data.ts`, `docs/source-duty-map.md` | 13表示名のみ、S2業務に不足 | 安定ID＋13正規名、39タスク、全業務対応表 | unit件数/文書照合 | タスク粒度は運用時に再調整可 |
+| R1-M06 | 検索 | `TaskBoard.tsx` | ID/タイトル/担当/リスクのみ | 部署、出典、詳細、状態、時期等を横断 | UI test | 大量件数時の索引なし |
+| R1-M07 | CRUD検証 | `storage.ts`, `TaskModal.tsx` | 参照切れのみ一部検査 | 存在、自己参照、重複、循環を項目エラー化 | unit/UI | 同時編集は対象外 |
+| R1-M08 | import | `storage.ts`, `App.tsx` | 部分検証、状態更新が分離 | schema v2、全項目、列挙、日時、上限、nodes/edges、依存を完全検証し原子的拒否 | unit/E2E | 将来schemaは移行実装が必要 |
+| R1-M09 | 永続化 | `types.ts`, `storage.ts`, `App.tsx`, `ProjectCanvas.tsx` | viewportなし、分割キー | FlowDataへviewport追加、bundle一括保存 | unit/E2E再読込 | localStorage容量上限あり |
+| R1-M10 | 耐障害 | `storage.ts`, `App.tsx` | 例外時に無言で初期化 | parse/読書例外をUI通知、raw値保護 | unit | ブラウザ自体のデータ削除は回復不能 |
+| R1-M11 | A11y | `TaskModal.tsx` | dialog属性・明示ラベル・trap不足 | dialog/aria-modal、全controlラベル、trap、Esc、起点復帰 | UI/a11y | 支援技術ごとの実機差 |
+| R1-M12 | A11y | `ProjectCanvas.tsx` | ドラッグ必須 | 接続元/先select、接続/解除、4方向移動 | E2E desktop/mobile | 自由配置の細粒度移動は20px単位 |
+| R1-M13 | mobile | `TaskBoard.tsx`, `styles.css` | mobileセル見出し欠落 | 全tdにdata-label | UI/E2E 390×844 | 320px未満は対象外 |
+| R1-M14 | 監査ログ | `types.ts`, `AuditLog.tsx`, `data.ts` | action/detailのみ、28件誤記 | 指定全フィールド、Markdown保存、39件へ訂正 | unit/UI | ブラウザ外の証跡はdocsで補完 |
+| R1-M15 | 品質 | `eslint.config.js`, tests, `playwright.config.ts`, `docs/verification/` | lintがtypecheck代用、UI/a11y/E2Eなし | 独立scriptと3周検証を実体化 | 全script 0 | Chromium以外は未検証 |
+| R1-M16 | security | `package.json`, `pnpm-lock.yaml` | Vite 5/Vitest 2、監査脆弱性 | Vite 6.4.3、Vitest 3.2.6、Playwright 1.55.1 | pnpm audit 0 | 将来の新規advisory |
+| R1-R01 | 手順 | `README.md`, `package.json` | npm/pnpm混在 | pnpm 11.19.0＋frozen lockfileへ統一 | clean install手順記載 | Corepack可用性は環境依存 |
+| R1-R02 | 通知 | `App.tsx`, `TaskModal.tsx` | errorもstatus | errorはalert、成功はstatus | a11y/E2E | confirmはブラウザ標準UI |
+
+証拠と詳細は `docs/audit-round-1.md`、3周ログは `docs/verification/` に分離して保存しています。
+
+## 2026-08-14 — 0.1.0 / Initial build
+
+- React + TypeScript + Viteのローカルファースト運用アプリを新規構築。
+- 13組織単位・29件の初期タスク、Kanban/一覧、自由キャンバス、localStorage、JSON import/exportを実装。
