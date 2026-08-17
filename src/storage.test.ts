@@ -4,7 +4,7 @@ import { currentPhaseFor, initialAudit, initialEdges, initialKpis, initialNodes,
 import { SOURCE_CATALOG } from './sourceCatalog'
 import { KEYS, parseImport, readBundle, saveBundle, validateBundle, validateTaskCandidate } from './storage'
 import { departmentIdFor, normalizeDepartmentName, type ExportBundle, type Task } from './types'
-import { emptyWeeklyState, runWeeklyBundle } from './weekly'
+import { canonicalFingerprint, emptyWeeklyState, runWeeklyBundle } from './weekly'
 
 const bundle=():ExportBundle=>({schemaVersion:4,exportedAt:new Date().toISOString(),tasks:structuredClone(initialTasks),flow:{nodes:structuredClone(initialNodes),edges:structuredClone(initialEdges),viewport:structuredClone(initialViewport)},audit:structuredClone(initialAudit),kpis:structuredClone(initialKpis),reportBaseline:null,migrationArchive:[],weekly:emptyWeeklyState()})
 beforeEach(()=>localStorage.clear())
@@ -63,6 +63,41 @@ describe('schema v4 validation and migration',()=>{
   })
   it('imports schema v2 atomically into the same archive model',()=>{const legacy={schemaVersion:2,exportedAt:new Date().toISOString(),tasks:[{id:'T-999',title:'custom'}],flow:bundle().flow,audit:[]};const result=parseImport(JSON.stringify(legacy));expect(result.ok).toBe(true);expect(result.value.tasks).toHaveLength(73);expect(result.value.migrationArchive[0].tasks).toEqual(legacy.tasks)})
   it('migrates schema v3 to v4 without losing flow, audit, KPI, baseline or migrationArchive',()=>{const current=bundle(),{weekly:_,...legacy}=current,archive={fromSchema:2,migratedAt:new Date().toISOString(),reason:'保持確認',tasks:[{id:'T-1'}]};void _;const v3={...legacy,schemaVersion:3,migrationArchive:[archive],flow:{...legacy.flow,viewport:{x:44,y:55,zoom:1.4}}};localStorage.setItem(KEYS.legacyV3,JSON.stringify(v3));const result=readBundle();expect(result.ok).toBe(true);expect(result.value).toMatchObject({schemaVersion:4,flow:{viewport:{x:44,y:55,zoom:1.4}},migrationArchive:[archive],weekly:{lastRun:null,runs:[],completions:{},tombstones:[]}});expect(result.value.audit).toEqual(v3.audit);expect(result.value.kpis).toEqual(v3.kpis)})
+  it('removes legacy parent dependencies only from deliverable follow-ups and persists schema v4 normalization',()=>{
+    const source=bundle();source.tasks=source.tasks.map((task)=>task.id==='P6-07'?{...task,status:'完了',updatedAt:'2026-08-16T00:00:00.000Z'}:task)
+    const generated=runWeeklyBundle(source,new Date('2026-08-17T12:00:00+09:00'),'manual'),canonical=structuredClone(generated.tasks.filter((task)=>!task.createdByDepartment)),weekly=structuredClone(generated.weekly),deliverableRules=new Set(['deadline-deliverable-check','milestone-deliverable-acceptance'])
+    generated.tasks=generated.tasks.map((task)=>deliverableRules.has(task.provenance?.ruleId??'')?{...task,dependencies:[task.provenance!.sourceTaskId!]}:task)
+    const readiness=generated.tasks.find((task)=>task.provenance?.ruleId==='dependency-readiness')!;readiness.dependencies=['P0-02'];const readinessDependencies=structuredClone(readiness.dependencies)
+    localStorage.setItem(KEYS.bundle,JSON.stringify(generated));const result=readBundle(),stored=JSON.parse(localStorage.getItem(KEYS.bundle)!) as ExportBundle
+    expect(result.ok).toBe(true)
+    expect(result.value.tasks.filter((task)=>deliverableRules.has(task.provenance?.ruleId??'')).every((task)=>task.dependencies.length===0)).toBe(true)
+    expect(stored.tasks.filter((task)=>deliverableRules.has(task.provenance?.ruleId??'')).every((task)=>task.dependencies.length===0)).toBe(true)
+    expect(result.value.tasks.find((task)=>task.id===readiness.id)?.dependencies).toEqual(readinessDependencies)
+    expect(result.value.tasks.filter((task)=>!task.createdByDepartment)).toEqual(canonical)
+    expect(result.value.weekly).toEqual(weekly)
+    expect(validateBundle(result.value)).toEqual([])
+  })
+  it('canonicalizes sourceTaskIds provenance while preserving legacy dependency-readiness execution dependencies',()=>{
+    const generated=runWeeklyBundle(bundle(),new Date('2026-08-17T12:00:00+09:00'),'manual'),ruleIds=['deadline-deliverable-check','milestone-deliverable-acceptance','dependency-readiness'],targets=ruleIds.map((ruleId)=>generated.tasks.find((task)=>task.provenance?.ruleId===ruleId)!),targetById=new Map(targets.map((task)=>[task.id,structuredClone(task.provenance!)]))
+    generated.tasks=generated.tasks.map((task)=>{
+      const provenance=targetById.get(task.id);if(!provenance)return task
+      const sourceTaskIds=[provenance.sourceTaskId!,...provenance.dependencyIds],dependencies=provenance.ruleId==='dependency-readiness'?['P0-02']:[provenance.sourceTaskId!]
+      return {...task,dependencies,provenance:{ruleId:provenance.ruleId,sourceTaskIds} as never,fingerprint:`progress-control:${provenance.ruleId}:${sourceTaskIds.join('+')}:`}
+    })
+    localStorage.setItem(KEYS.bundle,JSON.stringify(generated));const result=readBundle()
+    expect(result.ok).toBe(true)
+    for(const original of targets.filter((task)=>task.provenance?.ruleId!=='dependency-readiness')){
+      const task=result.value.tasks.find((candidate)=>candidate.id===original.id)!
+      expect(task.dependencies).toEqual([])
+      expect(task.provenance).toEqual(original.provenance)
+      expect(task.fingerprint).toBe(canonicalFingerprint(task.provenance!))
+    }
+    const originalReadiness=targets.find((task)=>task.provenance?.ruleId==='dependency-readiness')!,readiness=result.value.tasks.find((task)=>task.id===originalReadiness.id)!
+    expect(readiness.dependencies).toEqual(['P0-02'])
+    expect(readiness.provenance).toEqual(originalReadiness.provenance)
+    expect(readiness.fingerprint).toBe(canonicalFingerprint(readiness.provenance!))
+    expect(validateBundle(result.value)).toEqual([])
+  })
   it('rejects blank and zero-width hold reasons',()=>{for(const reason of ['', '   ', '\u200b']){const task={...initialTasks[0],status:'保留' as const,holdReason:reason};expect(validateTaskCandidate(task,initialTasks).some((issue)=>issue.path.endsWith('holdReason'))).toBe(true)}})
   it('rejects missing dependency and cycles',()=>{const missing={...initialTasks[0],dependencies:['P9-99']};expect(validateTaskCandidate(missing,initialTasks).some((issue)=>issue.message.includes('存在しない'))).toBe(true);const a={...initialTasks[0],dependencies:['P0-02']},b={...initialTasks[1],dependencies:['P0-01']};expect(validateTaskCandidate(a,initialTasks.map((task)=>task.id===b.id?b:task)).some((issue)=>issue.message.includes('循環'))).toBe(true)})
   it('atomically rejects malicious source, flow, edge and audit bundles',()=>{
