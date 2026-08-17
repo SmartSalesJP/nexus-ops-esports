@@ -12,7 +12,8 @@
     "test": "vitest run",
     "test:ui": "vitest run src/components --reporter=verbose",
     "test:a11y": "vitest run src/a11y.test.tsx --reporter=verbose",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "verify:pages": "node scripts/verify-pages-build.mjs"
   },
   "dependencies": {
     "@xyflow/react": "^12.8.5",
@@ -41,6 +42,9 @@
     "typescript-eslint": "8.39.1",
     "vite": "^6.4.3",
     "vitest": "^3.2.6"
+  },
+  "engines": {
+    "node": ">=22"
   },
   "packageManager": "pnpm@11.19.0"
 }
