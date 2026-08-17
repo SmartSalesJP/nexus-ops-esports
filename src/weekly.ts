@@ -46,10 +46,15 @@ export function normalizeAutoTask(task:Task){
   if(task.createdByDepartment!=='esports_progress_control')return {task,changed:false}
   const raw=task.provenance as unknown as {ruleId?:unknown;sourceTaskId?:unknown;dependencyIds?:unknown;sourceTaskIds?:unknown;kpiId?:unknown}
   if(typeof raw?.ruleId!=='string')return {task,changed:false}
-  if(!Array.isArray(raw.sourceTaskIds)){const next=task.createdBy==='esports_progress_control'?task:{...task,createdBy:'esports_progress_control' as const};return{task:next,changed:next!==task}}
+  const clearsDeliverableDependency=raw.ruleId==='deadline-deliverable-check'||raw.ruleId==='milestone-deliverable-acceptance'
+  if(!Array.isArray(raw.sourceTaskIds)){
+    if(task.createdBy==='esports_progress_control'&&(!clearsDeliverableDependency||task.dependencies.length===0))return {task,changed:false}
+    const next={...task,createdBy:'esports_progress_control' as const,...(clearsDeliverableDependency?{dependencies:[]}:{})}
+    return {task:next,changed:true}
+  }
   const legacyIds=Array.isArray(raw.sourceTaskIds)?raw.sourceTaskIds.filter((id):id is string=>typeof id==='string'):[],sourceTaskId=typeof raw.sourceTaskId==='string'?raw.sourceTaskId:legacyIds[0]
   const dependencyIds=Array.isArray(raw.dependencyIds)?raw.dependencyIds.filter((id):id is string=>typeof id==='string'):raw.ruleId==='dependency-readiness'?legacyIds.slice(1):[]
-  const provenance=canonicalProvenance({ruleId:raw.ruleId,...(sourceTaskId?{sourceTaskId}:{}),dependencyIds,...(typeof raw.kpiId==='string'?{kpiId:raw.kpiId as KpiValue['id']}:{})}),next={...task,createdBy:'esports_progress_control' as const,provenance,fingerprint:canonicalFingerprint(provenance)}
+  const provenance=canonicalProvenance({ruleId:raw.ruleId,...(sourceTaskId?{sourceTaskId}:{}),dependencyIds,...(typeof raw.kpiId==='string'?{kpiId:raw.kpiId as KpiValue['id']}:{})}),next={...task,createdBy:'esports_progress_control' as const,...(clearsDeliverableDependency?{dependencies:[]}:{}),provenance,fingerprint:canonicalFingerprint(provenance)}
   return {task:next,changed:JSON.stringify(next)!==JSON.stringify(task)}
 }
 
