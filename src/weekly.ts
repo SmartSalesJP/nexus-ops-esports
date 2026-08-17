@@ -83,16 +83,18 @@ export function syncTaskCompletion(flow:FlowData,weekly:WeeklyState,task:Task,at
 type Proposal=Pick<Task,'title'|'phase'|'teamId'|'team'|'rawTeam'|'owner'|'assignees'|'rawAssignees'|'personKeys'|'urgency'|'deadline'|'deadlineDate'|'dependencies'> & AutoTaskProvenance & {reason:string;expectedDeliverable:string;rationaleCodes:string[]}
 const dueDays=(task:Task,scheduledFor:string)=>task.deadlineDate===undefined?null:Math.ceil((Date.parse(`${task.deadlineDate}T00:00:00+09:00`)-Date.parse(scheduledFor))/DAY)
 const hasFollowup=(tasks:Task[],sourceId:string,pattern:RegExp)=>tasks.some((task)=>task.dependencies.includes(sourceId)&&pattern.test(task.title))
+const hasDeliverableFollowup=(tasks:Task[],sourceId:string)=>tasks.some((task)=>(task.dependencies.includes(sourceId)||task.provenance?.sourceTaskId===sourceId)&&/成果物|提出|受入確認|完了確認|レビュー/.test(task.title))
 
 function proposalsFor(tasks:Task[],kpis:KpiValue[],scheduledFor:string):Proposal[]{
   const base=tasks.filter((task)=>!task.createdByDepartment&&!task.automationDisabled&&task.status!=='完了'),out:Proposal[]=[]
   for(const task of base){
     const unmet=canonicalDependencies(task.dependencies.filter((id)=>tasks.find((candidate)=>candidate.id===id)?.status!=='完了'))
     if(unmet.length&&!hasFollowup(tasks,task.id,/準備|依存|確認/))out.push({...task,ruleId:'dependency-readiness',sourceTaskId:task.id,dependencyIds:unmet,dependencies:[],reason:`${task.id} は未完了依存 ${unmet.join('、')} があり、準備・確認タスクが見当たりません。`,expectedDeliverable:'依存解消条件、担当、確認日時を記した準備メモ',rationaleCodes:['DEPENDENCY_UNMET_4'],title:`${task.id} 依存解消の準備・確認`,urgency:'高'})
-    const days=dueDays(task,scheduledFor),deadlineScore=days!==null&&days>=0&&days<=7?3:0,urgencyScore=task.urgency==='高'?2:0
-    if(deadlineScore+urgencyScore>=5&&!hasFollowup(tasks,task.id,/成果物|提出|完了確認|レビュー/))out.push({...task,ruleId:'deadline-deliverable-check',sourceTaskId:task.id,dependencyIds:[],dependencies:[task.id],reason:`${task.id} は期限7日以内かつ高緊急ですが、成果物・完了確認タスクが見当たりません。`,expectedDeliverable:'成果物の所在、受入条件、確認者、確認結果',rationaleCodes:['DEADLINE_7D_3','HIGH_URGENCY_2'],title:`${task.id} 成果物・完了確認`,urgency:'高'})
+    const days=dueDays(task,scheduledFor),deadlineScore=days!==null&&days>=0&&days<=7?3:0,urgencyScore=task.urgency==='高'?2:0,deliverableFollowupExists=hasDeliverableFollowup(tasks,task.id),deadlineDeliverableMissing=deadlineScore+urgencyScore>=5&&!deliverableFollowupExists
+    if(deadlineDeliverableMissing)out.push({...task,ruleId:'deadline-deliverable-check',sourceTaskId:task.id,dependencyIds:[],dependencies:[],reason:`${task.id} は期限7日以内かつ高緊急ですが、成果物・完了確認タスクが見当たりません。`,expectedDeliverable:'成果物の所在、受入条件、確認者、確認結果',rationaleCodes:['DEADLINE_7D_3','HIGH_URGENCY_2'],title:`${task.id} 成果物・完了確認`,urgency:'高'})
     const milestoneScore=days!==null&&days>=0&&days<=14?3:0,checklistMissing=!hasFollowup(tasks,task.id,/マイルストーン|チェックリスト/)
     if(milestoneScore+(checklistMissing?2:0)>=5&&checklistMissing)out.push({...task,ruleId:'milestone-checklist',sourceTaskId:task.id,dependencyIds:[],dependencies:[],reason:`${task.id} は14日以内のマイルストーン候補ですが、チェックリストが見当たりません。`,expectedDeliverable:'実施項目、受入条件、確認者を含むマイルストーンチェックリスト',rationaleCodes:['MILESTONE_14D_3','CHECKLIST_MISSING_2'],title:`${task.id} マイルストーンチェックリスト作成`})
+    if(milestoneScore===3&&!deliverableFollowupExists&&!deadlineDeliverableMissing)out.push({...task,ruleId:'milestone-deliverable-acceptance',sourceTaskId:task.id,dependencyIds:[],dependencies:[],reason:`${task.id} は14日以内のマイルストーン候補ですが、最終成果物・受入確認タスクが見当たりません。`,expectedDeliverable:'最終成果物の所在、具体的な受入条件、確認者、確認結果',rationaleCodes:['MILESTONE_14D_3','DELIVERABLE_ACCEPTANCE_MISSING_2'],title:`${task.id} 最終成果物・受入確認`})
   }
   for(const kpi of kpis.filter((item)=>item.actual===null||item.actual<item.target)){
     const missing=kpi.actual===null

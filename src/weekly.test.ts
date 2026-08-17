@@ -73,6 +73,24 @@ describe('weekly bundle mutation',()=>{
     const next=runWeeklyBundle(removed,new Date('2026-08-17T12:00:00+09:00'),'manual')
     expect(next.tasks.some((task)=>task.fingerprint===auto.fingerprint)).toBe(false)
   })
+  it('adds non-duplicated milestone acceptance follow-ups without parent-completion dependencies',()=>{
+    const source=bundle(),canonical=structuredClone(source.tasks),next=runWeeklyBundle(source,new Date('2026-08-17T12:00:00+09:00'),'manual'),phaseZeroAuto=next.tasks.filter((task)=>task.phase===0&&task.createdByDepartment==='esports_progress_control'),acceptance=phaseZeroAuto.filter((task)=>task.provenance?.ruleId==='milestone-deliverable-acceptance'),deadlineChecks=phaseZeroAuto.filter((task)=>task.provenance?.ruleId==='deadline-deliverable-check')
+    expect(acceptance.map((task)=>task.provenance?.sourceTaskId)).toEqual(['P0-03','P0-07','P0-08','P0-09'])
+    expect(acceptance.every((task)=>task.dependencies.length===0)).toBe(true)
+    expect(acceptance.every((task)=>task.expectedDeliverable==='最終成果物の所在、具体的な受入条件、確認者、確認結果')).toBe(true)
+    expect(acceptance.every((task)=>task.approvalState==='要確認'&&task.createdByDepartment==='esports_progress_control'&&task.createdRunId==='weekly:2026-W34'&&task.fingerprint===canonicalFingerprint(task.provenance!))).toBe(true)
+    expect(deadlineChecks.map((task)=>task.provenance?.sourceTaskId)).toEqual(['P0-01','P0-02','P0-04','P0-05','P0-06'])
+    expect(deadlineChecks.every((task)=>task.dependencies.length===0)).toBe(true)
+    expect(phaseZeroAuto.filter((task)=>/成果物|受入確認|完了確認/.test(task.title)).map((task)=>task.provenance?.sourceTaskId).sort()).toEqual(['P0-01','P0-02','P0-03','P0-04','P0-05','P0-06','P0-07','P0-08','P0-09'])
+    expect(source.tasks).toEqual(canonical)
+    expect(validateBundle(next)).toEqual([])
+  })
+  it('keeps dependency readiness independent from provenance-aware deliverable deduplication',()=>{
+    const source=bundle();source.tasks=source.tasks.map((task)=>task.id==='P0-03'?{...task,dependencies:['P0-07']}:task)
+    const first=runWeeklyBundle(source,new Date('2026-08-17T12:00:00+09:00'),'manual'),withoutReadiness={...first,tasks:first.tasks.filter((task)=>!(task.provenance?.ruleId==='dependency-readiness'&&task.provenance.sourceTaskId==='P0-03'))},second=runWeeklyBundle(withoutReadiness,new Date('2026-08-24T12:00:00+09:00'),'manual')
+    expect(second.tasks.filter((task)=>task.provenance?.ruleId==='dependency-readiness'&&task.provenance.sourceTaskId==='P0-03')).toHaveLength(1)
+    for(const sourceTaskId of ['P0-01','P0-02','P0-03','P0-04','P0-05','P0-06','P0-07','P0-08','P0-09'])expect(second.tasks.filter((task)=>['milestone-deliverable-acceptance','deadline-deliverable-check'].includes(task.provenance?.ruleId??'')&&task.provenance?.sourceTaskId===sourceTaskId)).toHaveLength(1)
+  })
   it('canonicalizes dependency roles so order, week changes and tombstones cannot duplicate a proposal',()=>{
     const make=(dependencies:string[])=>{const value=bundle();value.tasks=value.tasks.map((task)=>task.id==='P0-01'?{...task,dependencies}:task);return value},find=(value:ExportBundle)=>value.tasks.find((task)=>task.provenance?.ruleId==='dependency-readiness'&&task.provenance.sourceTaskId==='P0-01')!
     const a=runWeeklyBundle(make(['P0-02','P0-03','P0-02']),new Date('2026-08-14T12:00:00+09:00'),'manual'),b=runWeeklyBundle(make(['P0-03','P0-02']),new Date('2026-08-14T12:00:00+09:00'),'manual'),autoA=find(a),autoB=find(b)
