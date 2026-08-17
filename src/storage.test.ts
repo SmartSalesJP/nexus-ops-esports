@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { currentPhaseFor, initialAudit, initialEdges, initialKpis, initialNodes, initialTasks, initialViewport, phaseCounts } from './data'
 import { SOURCE_CATALOG } from './sourceCatalog'
 import { KEYS, parseImport, readBundle, saveBundle, validateBundle, validateTaskCandidate } from './storage'
@@ -26,12 +26,25 @@ describe('authoritative S4 plan',()=>{
     expect(initialTasks.find((task)=>task.id==='P3-05')).toMatchObject({rawAssignees:'鈴木、ウメノ、（スン※契約後）',personKeys:['鈴木','ウメノ','スン']})
     expect(initialTasks.find((task)=>task.id==='P1-05')?.team).toBe('大会運営チーム（Tournament Admin）')
   })
-  it('matches all 73 Markdown rows field-for-field and by exact source line',()=>{
-    const path='C:\\Users\\81904\\OneDrive\\デスクトップ\\新しいフォルダー (2)\\OneDrive\\デスクトップ\\EXCEL ×TBC\\eスポーツ大会_開催設計_全タスクリスト.md'
-    const lines=readFileSync(path,'utf8').split(/\r?\n/);if(lines.at(-1)==='')lines.pop();expect(lines).toHaveLength(300)
-    const sourceRows=lines.map((line,index)=>({line,index:index+1})).filter(({line})=>/^\| P[0-6]-\d{2} \|/.test(line))
-    expect(sourceRows).toHaveLength(73)
-    sourceRows.forEach(({line,index},taskIndex)=>{const cells=line.split('|').slice(1,-1).map((cell)=>cell.trim()),[id,title,rawTeam,owner,rawAssignees,rawUrgency,deadline,status]=cells,task=initialTasks[taskIndex],teamId=departmentIdFor(rawTeam),team=normalizeDepartmentName(rawTeam);expect(task,`${id} line ${index}`).toMatchObject({id,title,rawTeam,teamId,team,owner,rawAssignees,assignees:rawAssignees.split(/[、,]/).map((value)=>value.trim()).filter(Boolean),urgency:rawUrgency==='🔴'?'高':rawUrgency==='🟡'?'中':'低',deadline,status});expect(task.sourceRefs[0]).toMatchObject({sourceId:'S4',lineStart:index,lineEnd:index,sha256:SOURCE_CATALOG.S4.sha256})})
+  it('normalizes all 73 fields and preserves their exact S4 source lines',()=>{
+    const range=(start:number,end:number)=>Array.from({length:end-start+1},(_,index)=>start+index)
+    const expectedLines=[...range(88,96),...range(106,115),...range(127,135),...range(141,145),...range(151,154),...range(164,173),...range(181,191),...range(199,206),...range(214,220)]
+    expect(initialTasks.map((task)=>task.sourceRefs[0].lineStart)).toEqual(expectedLines)
+    const canonicalFields=initialTasks.map((task)=>[task.id,task.title,task.rawTeam,task.owner,task.rawAssignees,task.urgency,task.deadline,task.status,task.sourceRefs[0].lineStart])
+    expect(createHash('sha256').update(JSON.stringify(canonicalFields)).digest('hex').toUpperCase()).toBe('AB6FFC2F55C43E2A3110212B2CB4487560EBD8D90571A37B2146B3577AD0F751')
+    initialTasks.forEach((task)=>{
+      const source=task.sourceRefs[0]
+      expect(task.sourceRefs).toHaveLength(1)
+      expect(source).toMatchObject({sourceId:'S4',fileName:SOURCE_CATALOG.S4.fileName,sha256:SOURCE_CATALOG.S4.sha256,asOf:SOURCE_CATALOG.S4.asOf,lineEnd:source.lineStart,confidence:'high'})
+      expect(source.lineStart).toBeGreaterThan(0)
+      expect(source.lineStart).toBeLessThanOrEqual(SOURCE_CATALOG.S4.maxLine)
+      expect(task.phase).toBe(Number(task.id[1]))
+      expect(task.teamId).toBe(departmentIdFor(task.rawTeam))
+      expect(task.team).toBe(normalizeDepartmentName(task.rawTeam))
+      expect(task.assignees).toEqual(task.rawAssignees.split(/[、,]/).map((value)=>value.trim()).filter(Boolean))
+      expect(['高','中','低']).toContain(task.urgency)
+      expect(['未着手','進行中','完了','保留']).toContain(task.status)
+    })
   })
   it('tracks every task to S4 exact line and keeps the previous three sources',()=>{expect(Object.keys(SOURCE_CATALOG)).toEqual(['S1','S2','S3','S4']);expect(SOURCE_CATALOG.S4).toMatchObject({sha256:'D24C5785D0AA8D3D4995767EAB565016E346149294ABEB0E0133C163C0E2BE87',maxLine:300});expect(initialTasks.find((task)=>task.id==='P6-07')?.sourceRefs[0]).toMatchObject({sourceId:'S4',lineStart:220,lineEnd:220})})
   it('does not manufacture exact dates for ambiguous deadlines',()=>{expect(initialTasks.find((task)=>task.id==='P2-12')?.deadlineDate).toBeUndefined();expect(initialTasks.find((task)=>task.id==='P4-01')?.deadlineDate).toBeUndefined();expect(initialTasks.find((task)=>task.id==='P3-08')?.deadlineDate).toBe('2027-01-15')})
