@@ -1,0 +1,11 @@
+import { fireEvent, render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { describe, expect, it, vi } from 'vitest'
+import { initialTasks } from '../data'
+import { TaskResultSheet } from './TaskResultSheet'
+
+describe('TaskResultSheet UI',()=>{
+ it('creates a logical empty sheet and keeps input after save failure',async()=>{const save=vi.fn().mockResolvedValue(false);render(<TaskResultSheet task={initialTasks[0]} onBack={vi.fn()} onSave={save}/>);const result=screen.getByRole('textbox',{name:/^結果/});await userEvent.type(result,'試験結果');await userEvent.click(screen.getByRole('button',{name:'保存'}));expect(await screen.findByRole('alert')).toHaveTextContent('入力内容は保持');expect(result).toHaveValue('試験結果');expect(save.mock.calls[0][0].id).toBe(`task-result:${initialTasks[0].id}`)})
+ it('renders external links safely and viewer controls as read-only',()=>{render(<TaskResultSheet task={initialTasks[0]} readOnly value={{id:`task-result:${initialTasks[0].id}`,taskId:initialTasks[0].id,resultBody:'ok',verificationState:'確認不能',verificationSummary:'-',deliverables:[{id:'d1',title:'sheet',type:'url',href:'https://example.com',accessState:'権限不足'}],nextStep:'-',completionCriteria:'-',verificationMemo:'-',updatedAt:'2026-08-17T00:00:00.000Z'}} onBack={vi.fn()} onSave={vi.fn()}/>);const link=screen.getByRole('link',{name:/URLを開く/});expect(link).toHaveAttribute('target','_blank');expect(link).toHaveAttribute('rel','noopener noreferrer');expect(screen.queryByRole('button',{name:'編集'})).not.toBeInTheDocument();expect(screen.getByRole('status')).toHaveTextContent('viewer')})
+ it('reports dirty edits and suppresses a same-tick duplicate save',async()=>{let resolve:(value:boolean)=>void=()=>{};const save=vi.fn(()=>new Promise<boolean>((done)=>{resolve=done})),dirty=vi.fn();render(<TaskResultSheet task={initialTasks[0]} onDirty={dirty} onBack={vi.fn()} onSave={save}/>);await userEvent.type(screen.getByRole('textbox',{name:/^結果/}),'x');const form=screen.getByRole('button',{name:'保存'}).closest('form')!;fireEvent.submit(form);fireEvent.submit(form);expect(save).toHaveBeenCalledTimes(1);expect(dirty).toHaveBeenCalledWith(true);resolve(true);expect(await screen.findByRole('status')).toHaveTextContent('保存しました')})
+})

@@ -27,7 +27,7 @@ describe('weekly bundle mutation',()=>{
     expect(next.flow.nodes.filter((node)=>node.id==='weekly-complete:P0-01')).toHaveLength(1)
     expect(next.flow.nodes.filter((node)=>node.id==='weekly-summary:weekly:2026-W33')).toHaveLength(1)
     expect(next.flow.nodes.filter((node)=>!node.id.startsWith('weekly-'))).toEqual(userNodes)
-    expect(next.flow.edges).toEqual(edges);expect(next.flow.viewport).toEqual(viewport)
+    expect(next.flow.edges.filter((edge)=>!edge.id.startsWith('weekly-project:'))).toEqual(edges);expect(next.flow.viewport).toEqual(viewport)
     expect(validateBundle(next)).toEqual([])
   })
   it('is idempotent for the same week and preserves user-moved managed-node positions',()=>{
@@ -46,13 +46,14 @@ describe('weekly bundle mutation',()=>{
     const source=bundle(),only=source.tasks[0];source.tasks=[only];source.flow={nodes:[],edges:[],viewport:{x:0,y:0,zoom:1}};source.audit=[];source.kpis=source.kpis.map((kpi)=>({...kpi,actual:kpi.target}))
     const first=runWeeklyBundle(source,new Date('2026-08-10T00:00:00+09:00'),'scheduled'),originalRun=structuredClone(first.weekly.lastRun),at='2026-08-12T03:00:00.000Z',completed={...only,status:'完了' as const,updatedAt:at},synced=syncTaskCompletion(first.flow,first.weekly,completed,at),changed={...first,exportedAt:at,tasks:first.tasks.map((task)=>task.id===completed.id?completed:task),flow:synced.flow,weekly:synced.weekly}
     const rerun=runWeeklyBundle(changed,new Date('2026-08-13T12:00:00+09:00'),'manual')
-    expect(originalRun?.snapshot).toMatchObject({completed:0,total:1});expect(rerun).toBe(changed);expect(rerun.weekly.lastRun).toEqual(originalRun);expect(rerun.weekly.completions[only.id].currentStatus).toBe('完了');expect(rerun.flow.nodes.find((node)=>node.id===`weekly-complete:${only.id}`)?.data.currentStatus).toBe('完了')
+    expect(originalRun?.snapshot).toMatchObject({completed:0,total:1});expect(rerun).not.toBe(changed);expect(rerun.weekly.lastRun).toEqual(originalRun);expect(rerun.weekly.completions[only.id].currentStatus).toBe('完了');expect(rerun.flow.nodes.find((node)=>node.id===`weekly-complete:${only.id}`)?.data.currentStatus).toBe('完了');expect(rerun.flow.nodes.find((node)=>node.id===`weekly-project:task:${only.id}`)?.data.label).toContain('成果未登録')
   })
   it('keeps the full 73-task bundle unchanged after a persisted status transition and same-week rerun',()=>{
     const first=runWeeklyBundle(bundle(),new Date('2026-08-10T00:00:00+09:00'),'scheduled'),at='2026-08-12T03:00:00.000Z',source=first.tasks.find((task)=>task.id==='P0-01')!,completed={...source,status:'完了' as const,updatedAt:at},synced=syncTaskCompletion(first.flow,first.weekly,completed,at),changed={...first,exportedAt:at,tasks:first.tasks.map((task)=>task.id===completed.id?completed:task),flow:synced.flow,weekly:synced.weekly}
     const rerun=runWeeklyBundle(changed,new Date('2026-08-13T12:00:00+09:00'),'manual')
-    expect(rerun).toBe(changed);expect(rerun).toEqual(changed)
+    expect(rerun).not.toBe(changed);expect(rerun.weekly.runs).toEqual(changed.weekly.runs);expect(rerun.flow.nodes.find((node)=>node.id==='weekly-project:task:P0-01')?.data.label).toContain('完了後')
   })
+  it('updates managed result truth once and is a full no-op for the same result input',()=>{const first=runWeeklyBundle(bundle(),new Date('2026-08-10T00:00:00+09:00'),'scheduled'),task=first.tasks.find((item)=>item.id==='P0-01')!,at='2026-08-12T03:00:00.000Z',completed={...task,status:'完了' as const,updatedAt:at},synced=syncTaskCompletion(first.flow,first.weekly,completed,at),result={id:'task-result:P0-01' as const,taskId:'P0-01',resultBody:'完了',verificationState:'適合' as const,verificationSummary:'確認済み',deliverables:[{id:'deliverable:P0-01:1',title:'成果',type:'url' as const,href:'https://example.com/result',accessState:'利用可能' as const}],nextStep:'共有',completionCriteria:'承認',verificationMemo:'異常なし',updatedAt:at},changed={...first,exportedAt:at,tasks:first.tasks.map((item)=>item.id===completed.id?completed:item),taskResults:[result],flow:synced.flow,weekly:synced.weekly},updated=runWeeklyBundle(changed,new Date('2026-08-13T12:00:00+09:00'),'manual'),same=runWeeklyBundle(updated,new Date('2026-08-14T12:00:00+09:00'),'manual');expect(updated).not.toBe(changed);expect(updated.flow.nodes.find((node)=>node.id==='weekly-project:task:P0-01')?.data.label).toContain('成果登録あり / 適合 / deliverable 1件');expect(updated.weekly.runs).toEqual(changed.weekly.runs);expect(same).toBe(updated)})
   it('retains truthful completion history when a task is reopened',()=>{
     const source=bundle(),completed={...source.tasks[0],status:'完了' as const,updatedAt:'2026-08-14T01:00:00.000Z'},first=syncTaskCompletion(source.flow,source.weekly,completed,'2026-08-14T01:00:00.000Z'),reopened={...completed,status:'進行中' as const,updatedAt:'2026-08-15T01:00:00.000Z'},second=syncTaskCompletion(first.flow,first.weekly,reopened,'2026-08-15T01:00:00.000Z')
     expect(second.weekly.completions['P0-01']).toMatchObject({firstSeen:'2026-08-14T01:00:00.000Z',lastConfirmed:'2026-08-14T01:00:00.000Z',currentStatus:'進行中'})
