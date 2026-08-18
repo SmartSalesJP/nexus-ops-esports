@@ -4,6 +4,11 @@
 
 Schema v4 remains the storage version. `taskResults` is a backward-compatible bundle member; legacy local/cloud bundles without it are normalized to `[]`. Each saved sheet has the identity `task-result:<taskId>` and is persisted as a separate `task_result` cloud entity, so task and result OCC versions and audit diffs are independent.
 
+Milestone checklist tasks add an optional ordered `checklistItems` member to the
+same entity. See [milestone-checklist.md](./milestone-checklist.md). Results that
+omit this member remain valid and are not rewritten merely because they are
+read.
+
 The frontend validator enforces one sheet per existing task, one stable ID per deliverable, field/count limits, ISO timestamps, and HTTPS-only links. URLs with credentials, protocol-relative syntax, control characters, or any non-HTTPS scheme are rejected. External links use `target="_blank"` with `rel="noopener noreferrer"`; result content is rendered as text.
 
 ## UI behavior

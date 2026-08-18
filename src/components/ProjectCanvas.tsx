@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { addEdge, applyEdgeChanges, applyNodeChanges, Background, Controls, MiniMap, ReactFlow, useEdgesState, useNodesState, type Connection, type Edge, type Node, type Viewport } from '@xyflow/react'
 import { Link2, Plus, RotateCcw, Save, StickyNote, Trash2 } from 'lucide-react'
-import type { FlowData, Task } from '../types'
+import type { FlowData, Task, TaskResultSheet } from '../types'
+import { checklistProgress, isMilestoneChecklist } from '../checklistTemplates'
 import { flowsEqualForDirty } from './flowDirty'
 
-type Props={initialFlow:FlowData;tasks:Task[];readOnly?:boolean;onOpenResult?:(taskId:string)=>void;onDirty?:(dirty:boolean)=>void;onSave:(flow:FlowData)=>Promise<boolean>|boolean}
-export function ProjectCanvas({initialFlow,tasks,readOnly=false,onOpenResult,onDirty,onSave}:Props){
+type Props={initialFlow:FlowData;tasks:Task[];taskResults?:TaskResultSheet[];readOnly?:boolean;onOpenResult?:(taskId:string)=>void;onDirty?:(dirty:boolean)=>void;onSave:(flow:FlowData)=>Promise<boolean>|boolean}
+export function ProjectCanvas({initialFlow,tasks,taskResults=[],readOnly=false,onOpenResult,onDirty,onSave}:Props){
  const [nodes,setNodes]=useNodesState(initialFlow.nodes),[edges,setEdges]=useEdgesState(initialFlow.edges)
  const [isDirty,setIsDirty]=useState(false),[saving,setSaving]=useState(false),saveLock=useRef(false)
  const [selected,setSelected]=useState<{nodes:Node[];edges:Edge[]}>({nodes:[],edges:[]})
@@ -40,6 +41,6 @@ export function ProjectCanvas({initialFlow,tasks,readOnly=false,onOpenResult,onD
     <Background color="#25365f" gap={28}/><Controls position="bottom-left"/><MiniMap aria-label="キャンバスミニマップ" pannable zoomable nodeColor="#4f7cff" maskColor="rgba(6,9,19,.72)"/>
    </ReactFlow>
   </div>
-  <details className="canvas-fallback"><summary>キャンバス一覧（キーボード・モバイル用）</summary><ul>{nodes.map((node)=>{const data=node.data as {taskId?:unknown;taskIds?:unknown};const taskId=typeof data.taskId==='string'?data.taskId:Array.isArray(data.taskIds)&&typeof data.taskIds[0]==='string'?data.taskIds[0]:'';return <li key={node.id}><span>{String(node.data.label).split('\n')[0]}</span>{taskId&&<button className="button ghost" onClick={()=>onOpenResult?.(taskId)}>{taskId} の成果シート</button>}</li>})}</ul></details>
+  <details className="canvas-fallback"><summary>キャンバス一覧（キーボード・モバイル用）</summary><ul>{nodes.map((node)=>{const data=node.data as {taskId?:unknown;taskIds?:unknown};const taskId=typeof data.taskId==='string'?data.taskId:Array.isArray(data.taskIds)&&typeof data.taskIds[0]==='string'?data.taskIds[0]:'',task=tasks.find((item)=>item.id===taskId),result=taskResults.find((item)=>item.taskId===taskId),progress=checklistProgress(result?.checklistItems),label=task&&isMilestoneChecklist(task)?`チェックリスト${progress.total?` ${progress.completed}/${progress.total}`:''}`:'成果シート';return <li key={node.id}><span>{String(node.data.label).split('\n')[0]}</span>{taskId&&<button className="button ghost" onClick={()=>onOpenResult?.(taskId)}>{taskId} の{label}</button>}</li>})}</ul></details>
  </section>
 }

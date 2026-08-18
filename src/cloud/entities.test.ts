@@ -25,7 +25,7 @@ describe('cloud entity adapter',()=>{
 
 describe('task result cloud entity',()=>{
   it('round-trips task_result payload and emits its task reference',()=>{
-    const source=bundle(),result={id:'task-result:P0-01',taskId:'P0-01',resultBody:'完了',verificationState:'適合' as const,verificationSummary:'確認済み',deliverables:[{id:'deliverable:P0-01:1',title:'成果',type:'url' as const,href:'https://example.com/result',accessState:'利用可能' as const}],nextStep:'共有',completionCriteria:'承認',verificationMemo:'異常なし',updatedAt:'2026-08-17T00:00:00.000Z'}
+    const source=bundle(),result={id:'task-result:P0-01',taskId:'P0-01',resultBody:'完了',verificationState:'適合' as const,verificationSummary:'確認済み',deliverables:[{id:'deliverable:P0-01:1',title:'成果',type:'url' as const,href:'https://example.com/result',accessState:'利用可能' as const}],checklistItems:[{id:'c1',title:'item',status:'完了' as const,acceptanceCriteria:'criteria',assignee:'owner',reviewer:'reviewer',reviewedAt:'2026-08-17T00:00:00.000Z',evidenceMemo:'evidence',holdReason:''}],nextStep:'共有',completionCriteria:'承認',verificationMemo:'異常なし',updatedAt:'2026-08-17T00:00:00.000Z'}
     source.taskResults=[result as NonNullable<ExportBundle['taskResults']>[number]]
     const entities=bundleToEntities(source),entity=entities.find((item)=>item.entityType==='task_result'),change=diffEntities([],source).find((item)=>item.entityType==='task_result')
     expect(entity).toMatchObject({entityId:result.id,payload:result})
