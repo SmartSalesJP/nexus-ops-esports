@@ -95,6 +95,8 @@ begin
     where n.nspname = 'app_private'
       and p.proname in (
         'validate_task_result_payload', 'validate_task_result_record',
+        'validate_task_result_payload_without_checklist',
+        'task_result_has_visible_text',
         'validate_entity_payload', 'validate_entity_payload_v4_legacy'
       )
       and (
@@ -1158,6 +1160,106 @@ begin
   if (public.rpc_read_snapshot(pg_catalog.current_setting('nexus.test.org4')::uuid)
       ->'organization'->>'stateVersion')::bigint <> 2 then
     raise exception 'valid optional boundary fixture was not rolled back';
+  end if;
+end;
+$$;
+
+-- The optional checklist uses the existing editor RPC and task link. This
+-- successful write is rolled back locally so later OCC fixtures remain stable.
+do $$
+declare
+  v_payload jsonb;
+  v_item jsonb;
+begin
+  v_item := jsonb_build_object(
+    'id','checklist:P0-01:1','title','contact stakeholder','status','完了',
+    'acceptanceCriteria','reply is recorded','assignee','owner',
+    'reviewer','reviewer','reviewedAt','2026-08-17T00:00:00Z',
+    'evidenceMemo','message log checked','holdReason',''
+  );
+  v_payload := jsonb_set(
+    public.nexus_test_task_result_payload('P0-01'),
+    '{checklistItems}', jsonb_build_array(v_item)
+  );
+  begin
+    perform public.rpc_apply_changes(
+      pg_catalog.current_setting('nexus.test.org4')::uuid,
+      2,
+      jsonb_build_array(jsonb_build_object(
+        'op','upsert','entityType','task_result',
+        'entityId','task-result:P0-01','expectedVersion',1,
+        'payload',v_payload,
+        'references',jsonb_build_array(jsonb_build_object(
+          'kind','task','entityType','task','entityId','P0-01'
+        ))
+      )),
+      gen_random_uuid()
+    );
+    raise exception using errcode='ZX001',message='rollback valid checklist RPC fixture';
+  exception when sqlstate 'ZX001' then null;
+  end;
+  if (public.rpc_read_snapshot(pg_catalog.current_setting('nexus.test.org4')::uuid)
+      ->'organization'->>'stateVersion')::bigint <> 2 then
+    raise exception 'valid checklist RPC fixture was not rolled back';
+  end if;
+end;
+$$;
+
+-- Checklist validation rejects unknown keys, whitespace/zero-width-only
+-- required text, missing completion evidence, and missing hold reasons. The
+-- preceding legacy payload RPC proves checklistItems remains optional.
+do $$
+declare
+  v_base jsonb;
+  v_item jsonb;
+  v_variant jsonb;
+  v_variants jsonb[];
+  v_rejected boolean;
+begin
+  v_item := jsonb_build_object(
+    'id','checklist:P0-01:1','title','item','status','完了',
+    'acceptanceCriteria','criteria','assignee','owner','reviewer','reviewer',
+    'reviewedAt','2026-08-17T00:00:00Z','evidenceMemo','evidence','holdReason',''
+  );
+  v_base := jsonb_set(
+    public.nexus_test_task_result_payload('P0-01'),
+    '{checklistItems}',jsonb_build_array(v_item)
+  );
+  v_variants := array[
+    jsonb_set(v_base,'{checklistItems,0,unexpected}','true'::jsonb),
+    jsonb_set(v_base,'{checklistItems,0,reviewer}',to_jsonb(E'\t' || chr(8203))),
+    jsonb_set(v_base,'{checklistItems,0,reviewedAt}',to_jsonb(''::text)),
+    jsonb_set(v_base,'{checklistItems,0,evidenceMemo}',to_jsonb(''::text)),
+    jsonb_set(
+      jsonb_set(v_base,'{checklistItems,0,status}',to_jsonb('保留'::text)),
+      '{checklistItems,0,holdReason}',to_jsonb(E' \t' || chr(8203))
+    )
+  ];
+  foreach v_variant in array v_variants loop
+    v_rejected := false;
+    begin
+      perform public.rpc_apply_changes(
+        pg_catalog.current_setting('nexus.test.org4')::uuid,
+        2,
+        jsonb_build_array(jsonb_build_object(
+          'op','upsert','entityType','task_result',
+          'entityId','task-result:P0-01','expectedVersion',1,
+          'payload',v_variant,
+          'references',jsonb_build_array(jsonb_build_object(
+            'kind','task','entityType','task','entityId','P0-01'
+          ))
+        )),
+        gen_random_uuid()
+      );
+    exception when invalid_parameter_value then v_rejected := true;
+    end;
+    if not v_rejected then
+      raise exception 'invalid checklist payload unexpectedly passed: %',v_variant;
+    end if;
+  end loop;
+  if (public.rpc_read_snapshot(pg_catalog.current_setting('nexus.test.org4')::uuid)
+      ->'organization'->>'stateVersion')::bigint <> 2 then
+    raise exception 'invalid checklist RPC changed organization state';
   end if;
 end;
 $$;

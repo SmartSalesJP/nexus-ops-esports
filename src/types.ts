@@ -76,7 +76,10 @@ export type VerificationState=typeof verificationStates[number]
 export type DeliverableType=typeof deliverableTypes[number]
 export type DeliverableAccessState=typeof deliverableAccessStates[number]
 export interface Deliverable { id:string; title:string; type:DeliverableType; href:string; note?:string; accessState:DeliverableAccessState; lastCheckedAt?:string }
-export interface TaskResultSheet { id:`task-result:${string}`; taskId:string; resultBody:string; verificationState:VerificationState; verificationSummary:string; verifiedBy?:string; verifiedAt?:string; deliverables:Deliverable[]; nextStep:string; completionCriteria:string; verificationMemo:string; updatedAt:string }
+export const checklistStatuses=['未着手','進行中','完了','保留'] as const
+export type ChecklistStatus=typeof checklistStatuses[number]
+export interface ChecklistItem { id:string; title:string; status:ChecklistStatus; acceptanceCriteria:string; assignee:string; reviewer:string; reviewedAt:string; evidenceMemo:string; holdReason:string }
+export interface TaskResultSheet { id:`task-result:${string}`; taskId:string; resultBody:string; verificationState:VerificationState; verificationSummary:string; verifiedBy?:string; verifiedAt?:string; deliverables:Deliverable[]; checklistItems?:ChecklistItem[]; nextStep:string; completionCriteria:string; verificationMemo:string; updatedAt:string }
 
 export interface AutoTaskProvenance { ruleId:string; sourceTaskId?:string; dependencyIds:string[]; kpiId?:KpiValue['id'] }
 
