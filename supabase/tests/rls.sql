@@ -4,6 +4,10 @@
 
 begin;
 
+create extension if not exists pgtap with schema extensions;
+
+select extensions.plan(1);
+
 do $$
 declare
   v_table text;
@@ -1816,5 +1820,8 @@ begin
 exception when invalid_parameter_value then null;
 end;
 $$;
+
+select extensions.pass('RLS and RPC self-test completed without exceptions');
+select * from extensions.finish();
 
 rollback;
