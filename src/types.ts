@@ -69,6 +69,15 @@ export interface Task {
   automationDisabled?: boolean
 }
 
+export const verificationStates=['未確認','確認中','適合','要修正','確認不能'] as const
+export const deliverableTypes=['excel','google-sheets','google-docs','notion','url','file','other'] as const
+export const deliverableAccessStates=['未確認','利用可能','権限不足','リンク切れ'] as const
+export type VerificationState=typeof verificationStates[number]
+export type DeliverableType=typeof deliverableTypes[number]
+export type DeliverableAccessState=typeof deliverableAccessStates[number]
+export interface Deliverable { id:string; title:string; type:DeliverableType; href:string; note?:string; accessState:DeliverableAccessState; lastCheckedAt?:string }
+export interface TaskResultSheet { id:`task-result:${string}`; taskId:string; resultBody:string; verificationState:VerificationState; verificationSummary:string; verifiedBy?:string; verifiedAt?:string; deliverables:Deliverable[]; nextStep:string; completionCriteria:string; verificationMemo:string; updatedAt:string }
+
 export interface AutoTaskProvenance { ruleId:string; sourceTaskId?:string; dependencyIds:string[]; kpiId?:KpiValue['id'] }
 
 export interface KpiValue { id: 'concurrent'|'pv'|'profit'|'sponsors'|'schools'|'participants'; label:string; target:number; unit:string; actual:number|null }
@@ -94,7 +103,7 @@ export interface WeeklyRun {
   snapshot:WeeklySnapshot
 }
 export interface WeeklyState { lastRun:WeeklyRun|null; runs:WeeklyRun[]; completions:Record<string,CompletionHistory>; tombstones:string[] }
-export interface ExportBundle { schemaVersion:4; exportedAt:string; tasks:Task[]; flow:FlowData; audit:AuditItem[]; kpis:KpiValue[]; reportBaseline:ReportSnapshot|null; migrationArchive:MigrationArchive[]; weekly:WeeklyState }
+export interface ExportBundle { schemaVersion:4; exportedAt:string; tasks:Task[]; taskResults?:TaskResultSheet[]; flow:FlowData; audit:AuditItem[]; kpis:KpiValue[]; reportBaseline:ReportSnapshot|null; migrationArchive:MigrationArchive[]; weekly:WeeklyState }
 export interface ValidationIssue { path:string; message:string }
 export interface LoadResult<T> { ok:boolean; value:T; error?:string; raw?:string }
 

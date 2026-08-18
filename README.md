@@ -1,10 +1,14 @@
 # NEXUS OPS — eスポーツ大会運用アプリ
 
+Supabase共有版の設定、Auth callback、クラウド保存・競合・未移行時の扱いは [docs/supabase-app.md](docs/supabase-app.md) を参照してください。公開ブラウザに設定できる値はProject URLとpublishable keyだけです。
+
+公開境界: S4静的正本と初期73タスク本文はGitHub Pagesの公開artifactに含まれます。Supabase Auth/RLSが保護するのは更新状態と共有編集データです。利用者の個人情報、token、秘密、非公開追記をrepositoryや公開artifactへ含めないでください。
+
 2027年3月開催予定のVALORANT全国学生大会を、Phase 0〜6の73タスクで管理するローカルファーストアプリです。タスク進行表を正本とし、キャンバスは企画補助として扱います。
 
 ## 起動と検証
 
-Node.js 20以上、pnpm 11.19.0を使用します。
+Node.js 22以上、pnpm 11.19.0を使用します。
 
 ```bash
 corepack enable
@@ -21,6 +25,7 @@ pnpm test:a11y
 pnpm test:e2e
 pnpm build
 pnpm audit --audit-level=moderate
+pnpm supabase --version
 ```
 
 ## 正本データ
@@ -54,7 +59,7 @@ pnpm audit --audit-level=moderate
 
 ## schema v4移行と週次実行
 
-保存キーは `nexus.bundle.v4` です。schema v3はtasks/flow/viewport/audit/KPI/reportBaseline/migrationArchiveを保持したまま、空の週次状態を追加して一度だけ移行します。旧 `nexus.bundle.v2` を検出した場合も、旧T系タスク（ユーザー編集・追加を含む）を `migrationArchive` に元オブジェクトのまま退避し、S4のP系73件を有効化します。再読込でアーカイブは増殖しません。
+ローカル正本と移行元の保存キーは `nexus.bundle.v4` です。クラウド接続後もこの値は自動更新せず、検証済みserver read-backはorganization別の `nexus.cloud.cache.v1:<organizationId>` にstate version・確認時刻とともに保存します。schema v3はtasks/flow/viewport/audit/KPI/reportBaseline/migrationArchiveを保持したまま、空の週次状態を追加して一度だけ移行します。旧 `nexus.bundle.v2` を検出した場合も、旧T系タスク（ユーザー編集・追加を含む）を `migrationArchive` に元オブジェクトのまま退避し、S4のP系73件を有効化します。再読込でアーカイブは増殖しません。
 
 週次処理は、task・canvas node・週次run・auditをメモリ上で組み立て、schema全量検証後に単一bundleとして保存し、直後に同じ文字列を再読込して一致確認します。検証/保存失敗時はReact状態を更新せず、正本へ部分的なtask/node/auditを残しません。自動タスクは `AUTO-YYYY-Www-NN`、`sourceRefs: []` とし、S4出典を偽装せず内部provenance・fingerprint・根拠コード・期待成果物・承認状態を保持します。削除した自動タスクのfingerprintはtombstoneに保存し、同根拠での復活を止めます。
 

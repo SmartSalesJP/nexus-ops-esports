@@ -4,18 +4,19 @@ import { sourceRef } from '../sourceCatalog'
 import { departmentName, organizationUnits, statuses, urgencies, type Task, type ValidationIssue } from '../types'
 import { personKeysFor } from '../planData'
 
-type Props={task?:Task|null;tasks:Task[];onClose:()=>void;onSave:(task:Task)=>ValidationIssue[]}
+type Props={task?:Task|null;tasks:Task[];dirty?:boolean;onClose:()=>void;onDiscard?:()=>void;onSave:(task:Task)=>ValidationIssue[]|Promise<ValidationIssue[]>;onDirty?:(dirty:boolean)=>void}
 const nextId=(tasks:Task[])=>{for(let phase=0;phase<=6;phase++)for(let number=1;number<=99;number++){const id=`P${phase}-${String(number).padStart(2,'0')}`;if(!tasks.some((task)=>task.id===id))return id}return'P6-99'}
 const blank=(tasks:Task[]):Task=>{const id=nextId(tasks);return{id,title:'',phase:Number(id[1]) as Task['phase'],teamId:'planning',team:'企画チーム',rawTeam:'企画チーム',owner:'ウメノ',assignees:[],rawAssignees:'',personKeys:[],urgency:'中',deadline:'',status:'未着手',holdReason:'',dependencies:[],notes:[],sourceRefs:[sourceRef('S4',276,300,'medium')],updatedAt:new Date().toISOString()}}
 const meaningful=(value:string)=>value.replace(/[\s\u200B-\u200D\uFEFF]/g,'').length>0
 
-export function TaskModal({task,tasks,onClose,onSave}:Props){
-  const [draft,setDraft]=useState<Task>(task??blank(tasks)),[issues,setIssues]=useState<ValidationIssue[]>([])
-  const dialogRef=useRef<HTMLDivElement>(null),originRef=useRef<HTMLElement|null>(null),uid=useId()
+export function TaskModal({task,tasks,dirty=false,onClose,onDiscard,onSave,onDirty}:Props){
+  const [draft,setDraft]=useState<Task>(task??blank(tasks)),[issues,setIssues]=useState<ValidationIssue[]>([]),[saving,setSaving]=useState(false)
+  const dialogRef=useRef<HTMLDivElement>(null),originRef=useRef<HTMLElement|null>(null),initialDraft=useRef(structuredClone(draft)),submitLock=useRef(false),uid=useId()
+  useEffect(()=>onDirty?.(JSON.stringify(draft)!==JSON.stringify(initialDraft.current)),[draft,onDirty])
   useEffect(()=>{originRef.current=document.activeElement as HTMLElement;const dialog=dialogRef.current,focusable=()=>Array.from(dialog?.querySelectorAll<HTMLElement>('button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled])')??[]);focusable()[0]?.focus();const onKey=(event:KeyboardEvent)=>{if(event.key==='Escape'){event.preventDefault();onClose();return}if(event.key!=='Tab')return;const items=focusable(),first=items[0],last=items.at(-1);if(event.shiftKey&&document.activeElement===first){event.preventDefault();last?.focus()}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first?.focus()}};addEventListener('keydown',onKey);return()=>{removeEventListener('keydown',onKey);originRef.current?.focus()}},[onClose])
-  const set=<K extends keyof Task>(key:K,value:Task[K])=>setDraft((current)=>({...current,[key]:value}))
+  const set=<K extends keyof Task>(key:K,value:Task[K])=>{onDirty?.(true);setDraft((current)=>({...current,[key]:value}))}
   const id=(name:string)=>`${uid}-${name}`
-  const submit=(event:React.FormEvent)=>{event.preventDefault();if(draft.status==='保留'&&!meaningful(draft.holdReason)){setIssues([{path:'holdReason',message:'保留理由を入力してください'}]);return}const found=onSave({...draft,updatedAt:new Date().toISOString()});setIssues(found)}
+  const submit=async(event:React.FormEvent)=>{event.preventDefault();if(submitLock.current)return;if(draft.status==='保留'&&!meaningful(draft.holdReason)){setIssues([{path:'holdReason',message:'保留理由を入力してください'}]);return}submitLock.current=true;setSaving(true);try{const result=onSave({...draft,updatedAt:new Date().toISOString()});setIssues(result instanceof Promise?await result:result)}finally{submitLock.current=false;setSaving(false)}}
   const Field=({name,label,children,wide=false}:{name:string;label:string;children:React.ReactNode;wide?:boolean})=><div className={`field ${wide?'wide':''}`}><label htmlFor={id(name)}>{label}</label>{children}{issues.find((issue)=>issue.path.endsWith(name))&&<span className="field-error">{issues.find((issue)=>issue.path.endsWith(name))?.message}</span>}</div>
   return <div className="modal-backdrop" onMouseDown={(event)=>event.target===event.currentTarget&&onClose()}><div ref={dialogRef} className="modal" role="dialog" aria-modal="true" aria-labelledby={id('title-heading')}><form onSubmit={submit}>
     <div className="modal-head"><div><span className="eyebrow">TASK EDITOR</span><h2 id={id('title-heading')}>{task?'タスクを編集':'新規タスク'}</h2></div><button className="icon-button" type="button" onClick={onClose} aria-label="閉じる"><X size={18}/></button></div>
@@ -36,6 +37,6 @@ export function TaskModal({task,tasks,onClose,onSave}:Props){
       <Field name="notes" label="注意事項（改行区切り）" wide><textarea id={id('notes')} value={draft.notes.join('\n')} onChange={(event)=>set('notes',event.target.value.split('\n').map((value)=>value.trim()).filter(Boolean))} rows={3}/></Field>
       {draft.createdByDepartment&&<Field name="automationDisabled" label="この根拠の自動タスクを無効化する" wide><div className="automation-toggle"><input id={id('automationDisabled')} type="checkbox" checked={draft.automationDisabled??false} onChange={(event)=>set('automationDisabled',event.target.checked)}/><span>{draft.automationDisabled?'無効（週次更新で再提案しません）':'有効'}</span></div></Field>}
     </div>
-    <div className="modal-actions"><button className="button ghost" type="button" onClick={onClose}>キャンセル</button><button className="button primary" type="submit">保存する</button></div>
+    <div className="modal-actions">{dirty?<button className="button ghost" type="button" disabled={saving} onClick={onDiscard??onClose}>変更を破棄</button>:<button className="button ghost" type="button" disabled={saving} onClick={onClose}>キャンセル</button>}<button className="button primary" type="submit" disabled={saving}>{saving?'保存中…':'保存する'}</button></div>
   </form></div></div>
 }

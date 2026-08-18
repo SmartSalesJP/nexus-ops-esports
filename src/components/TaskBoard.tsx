@@ -1,10 +1,10 @@
 import { useRef } from 'react'
-import { AlertTriangle, CalendarDays, Clock3, Link2, Pencil, Plus, Search, Trash2, UserRound, UsersRound } from 'lucide-react'
+import { AlertTriangle, CalendarDays, Clock3, FileCheck2, Link2, Pencil, Plus, Search, Trash2, UserRound, UsersRound } from 'lucide-react'
 import { organizationUnits, people, statuses, type Status, type Task } from '../types'
 import { initialTasks } from '../data'
 
 export type DueView=''|'soon'|'overdue'
-type Props={tasks:Task[];view:'kanban'|'list';search:string;department:string;status:string;phase:string;person:string;dueView:DueView;groupByTeam:boolean;setSearch:(value:string)=>void;setDepartment:(value:string)=>void;setStatus:(value:string)=>void;setPhase:(value:string)=>void;setPerson:(value:string)=>void;setDueView:(value:DueView)=>void;onAdd:()=>void;onEdit:(task:Task)=>void;onDelete:(task:Task)=>void;onStatus:(id:string,status:Status)=>void}
+type Props={tasks:Task[];view:'kanban'|'list';search:string;department:string;status:string;phase:string;person:string;dueView:DueView;groupByTeam:boolean;readOnly?:boolean;setSearch:(value:string)=>void;setDepartment:(value:string)=>void;setStatus:(value:string)=>void;setPhase:(value:string)=>void;setPerson:(value:string)=>void;setDueView:(value:DueView)=>void;onAdd:()=>void;onEdit:(task:Task)=>void;onResult?:(task:Task)=>void;onDelete:(task:Task)=>void;onStatus:(id:string,status:Status)=>void}
 const today=()=>{const parts=Object.fromEntries(new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Tokyo',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date()).filter((part)=>part.type!=='literal').map((part)=>[part.type,part.value]));return`${parts.year}-${parts.month}-${parts.day}`}
 // eslint-disable-next-line react-refresh/only-export-components
 export const deadlineState=(task:Task,reference=today())=>{
@@ -22,8 +22,8 @@ const taskPeople=(task:Task)=>new Set(task.personKeys)
 const isBlocked=(task:Task,tasks:Task[])=>task.dependencies.some((id)=>tasks.find((item)=>item.id===id)?.status!=='完了')
 const authoritativeIds=new Set(initialTasks.map((task)=>task.id))
 
-function StatusSelect({task,onStatus}:{task:Task;onStatus:Props['onStatus']}){return <select className="status-select" id={`status-card-${task.id}`} aria-label={`${task.title}のステータス`} value={task.status} onChange={(event)=>onStatus(task.id,event.target.value as Status)}>{statuses.map((value)=><option key={value}>{value}</option>)}</select>}
-function TaskCard({task,tasks,phase5,onEdit,onDelete,onStatus}:{task:Task;tasks:Task[];phase5:boolean;onEdit:Props['onEdit'];onDelete:Props['onDelete'];onStatus:Props['onStatus']}){
+function StatusSelect({task,onStatus,readOnly}:{task:Task;onStatus:Props['onStatus'];readOnly?:boolean}){return <select className="status-select" id={`status-card-${task.id}`} aria-label={`${task.title}のステータス`} value={task.status} disabled={readOnly} onChange={(event)=>onStatus(task.id,event.target.value as Status)}>{statuses.map((value)=><option key={value}>{value}</option>)}</select>}
+function TaskCard({task,tasks,phase5,onEdit,onResult,onDelete,onStatus,readOnly}:{task:Task;tasks:Task[];phase5:boolean;onEdit:Props['onEdit'];onResult:Props['onResult'];onDelete:Props['onDelete'];onStatus:Props['onStatus'];readOnly?:boolean}){
   const due=deadlineState(task),blocked=isBlocked(task,tasks)
   return <article className={`task-card urgency-${task.urgency} ${due.kind==='overdue'&&task.urgency==='高'?'critical-overdue':''} ${phase5?'phase5-check':''}`} data-task-id={task.id}>
     <div className="task-card-head"><span className="task-id">{task.id}</span><span className={`urgency-badge urgency-${task.urgency}`}>緊急度 {task.urgency}</span></div>
@@ -37,7 +37,7 @@ function TaskCard({task,tasks,phase5,onEdit,onDelete,onStatus}:{task:Task;tasks:
     {task.notes.map((note)=><p className="task-note" key={note}><AlertTriangle size={14}/>{note}</p>)}
     {task.createdByDepartment&&<div className={`automation-note ${task.automationDisabled?'is-disabled':''}`}><b>全体進行管理部の提案 · {task.approvalState}</b><span>{task.reason}</span><span>成果物: {task.expectedDeliverable}</span>{task.automationDisabled&&<span>自動提案を無効化済み</span>}</div>}
     <div className="source-line">{task.sourceRefs.length?`出典 ${task.sourceRefs.map((source)=>`${source.sourceId}:${source.lineStart}-${source.lineEnd}`).join(', ')}`:`内部provenance ${task.provenance?.ruleId??'なし'}`}</div>
-    <div className="card-actions"><StatusSelect task={task} onStatus={onStatus}/><button onClick={()=>onEdit(task)} aria-label={`${task.title}を編集`}><Pencil size={16}/>編集</button><button onClick={()=>onDelete(task)} aria-label={`${task.title}を削除`} disabled={authoritativeIds.has(task.id)} title={authoritativeIds.has(task.id)?'S4正本タスクは削除できません':'削除'}><Trash2 size={16}/>削除</button></div>
+    <div className="card-actions"><StatusSelect task={task} onStatus={onStatus} readOnly={readOnly}/>{onResult&&<button onClick={()=>onResult(task)} aria-label={`${task.title}の成果シート`}><FileCheck2 size={16}/>成果シート</button>}<button disabled={readOnly} onClick={()=>onEdit(task)} aria-label={`${task.title}を編集`}><Pencil size={16}/>編集</button><button onClick={()=>onDelete(task)} aria-label={`${task.title}を削除`} disabled={readOnly||authoritativeIds.has(task.id)} title={authoritativeIds.has(task.id)?'S4正本タスクは削除できません':'削除'}><Trash2 size={16}/>削除</button></div>
   </article>
 }
 
@@ -49,10 +49,10 @@ export function TaskBoard(props:Props){
   }).sort((a,b)=>Number(deadlineState(b).kind==='overdue'&&b.urgency==='高')-Number(deadlineState(a).kind==='overdue'&&a.urgency==='高')||a.id.localeCompare(b.id))
   const phaseKeys=['','0','1','2','3','4','5','6'],phaseLabel=(value:string)=>value===''?'全体':`Phase ${value}`
   const onPhaseKey=(event:React.KeyboardEvent,index:number)=>{let next=index;if(event.key==='ArrowRight')next=(index+1)%phaseKeys.length;else if(event.key==='ArrowLeft')next=(index-1+phaseKeys.length)%phaseKeys.length;else if(event.key==='Home')next=0;else if(event.key==='End')next=phaseKeys.length-1;else return;event.preventDefault();props.setPhase(phaseKeys[next]);phaseRefs.current[next]?.focus()}
-  const renderCards=(items:Task[])=>props.view==='kanban'?<div className={`task-grid ${props.phase==='5'?'phase5-grid':''}`}>{items.map((task)=><TaskCard key={task.id} task={task} tasks={props.tasks} phase5={task.phase===5} onEdit={props.onEdit} onDelete={props.onDelete} onStatus={props.onStatus}/>)}</div>:<div className="task-list">{items.map((task)=><TaskCard key={task.id} task={task} tasks={props.tasks} phase5={task.phase===5} onEdit={props.onEdit} onDelete={props.onDelete} onStatus={props.onStatus}/>)}</div>
+  const renderCards=(items:Task[])=>props.view==='kanban'?<div className={`task-grid ${props.phase==='5'?'phase5-grid':''}`}>{items.map((task)=><TaskCard key={task.id} task={task} tasks={props.tasks} phase5={task.phase===5} onEdit={props.onEdit} onResult={props.onResult} onDelete={props.onDelete} onStatus={props.onStatus} readOnly={props.readOnly}/>)}</div>:<div className="task-list">{items.map((task)=><TaskCard key={task.id} task={task} tasks={props.tasks} phase5={task.phase===5} onEdit={props.onEdit} onResult={props.onResult} onDelete={props.onDelete} onStatus={props.onStatus} readOnly={props.readOnly}/>)}</div>
   return <section aria-labelledby="tasks-title">
     <div className="phase-tabs" role="tablist" aria-label="Phaseフィルタ">{phaseKeys.map((value,index)=><button ref={(element)=>{phaseRefs.current[index]=element}} role="tab" aria-selected={props.phase===value} tabIndex={props.phase===value?0:-1} className={props.phase===value?'active':''} onKeyDown={(event)=>onPhaseKey(event,index)} onClick={()=>props.setPhase(value)} key={value||'all'}>{phaseLabel(value)}<small>{value===''?props.tasks.length:props.tasks.filter((task)=>String(task.phase)===value).length}</small></button>)}</div>
-    <div className="section-heading"><div><span className="eyebrow">MISSION CONTROL</span><h2 id="tasks-title">タスク進行表</h2><p>{filtered.length} / {props.tasks.length} 件を表示</p></div><button className="button primary" onClick={props.onAdd}><Plus size={17}/>新規タスク</button></div>
+    <div className="section-heading"><div><span className="eyebrow">MISSION CONTROL</span><h2 id="tasks-title">タスク進行表</h2><p>{filtered.length} / {props.tasks.length} 件を表示</p></div><button className="button primary" disabled={props.readOnly} onClick={props.onAdd}><Plus size={17}/>新規タスク</button></div>
     <div className="person-filters" aria-label="担当者フィルタ">{people.map((person)=>{const related=props.tasks.filter((task)=>taskPeople(task).has(person)),high=related.filter((task)=>task.urgency==='高'&&task.status!=='完了').length;return <button key={person} aria-pressed={props.person===person} onClick={()=>props.setPerson(props.person===person?'':person)}><span>{person}</span><small><b>{high}</b> 高 / {related.length}件</small></button>})}</div>
     <div className="filters" role="search">
       <label className="search" htmlFor="task-search"><Search size={16}/><span className="sr-only">タスクを検索</span><input id="task-search" value={props.search} onChange={(event)=>props.setSearch(event.target.value)} placeholder="ID・タスク・担当・出典を検索"/></label>

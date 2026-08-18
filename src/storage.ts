@@ -1,18 +1,19 @@
 import type { Edge, Node, Viewport } from '@xyflow/react'
 import { initialAudit, initialEdges, initialKpis, initialNodes, initialTasks, initialViewport } from './data'
 import { SOURCE_CATALOG } from './sourceCatalog'
-import { auditClassifications, departmentIdFor, departmentIds, departmentName, organizationUnits, people, sourceConfidences, statuses, urgencies, type AuditItem, type AutoTaskProvenance, type ExportBundle, type FlowData, type LoadResult, type Task, type ValidationIssue } from './types'
+import { auditClassifications, deliverableAccessStates, deliverableTypes, departmentIdFor, departmentIds, departmentName, organizationUnits, people, sourceConfidences, statuses, urgencies, verificationStates, type AuditItem, type AutoTaskProvenance, type ExportBundle, type FlowData, type LoadResult, type Task, type ValidationIssue } from './types'
 import { canonicalFingerprint, canonicalProvenance, canonicalizeLegacyFingerprint, emptyWeeklyState, normalizeAutoTask, scheduledForRunId } from './weekly'
 
 export const KEYS={bundle:'nexus.bundle.v4',legacyV3:'nexus.bundle.v3',legacyBundle:'nexus.bundle.v2',legacyTasks:'nexus.tasks.v1',legacyFlow:'nexus.flow.v1',legacyAudit:'nexus.audit.v1',weeklyFailure:'nexus.weekly.failure.v1'} as const
 export const LIMITS={fileBytes:2_000_000,tasks:500,nodes:500,edges:2_000,audit:2_000} as const
 const initialFlow:FlowData={nodes:initialNodes,edges:initialEdges,viewport:initialViewport}
 const now=()=>new Date().toISOString()
-const fallback=():ExportBundle=>({schemaVersion:4,exportedAt:now(),tasks:initialTasks,flow:initialFlow,audit:initialAudit,kpis:initialKpis,reportBaseline:null,migrationArchive:[],weekly:emptyWeeklyState()})
+const fallback=():ExportBundle=>({schemaVersion:4,exportedAt:now(),tasks:initialTasks,taskResults:[],flow:initialFlow,audit:initialAudit,kpis:initialKpis,reportBaseline:null,migrationArchive:[],weekly:emptyWeeklyState()})
 const isObject=(value:unknown):value is Record<string,unknown>=>!!value&&typeof value==='object'&&!Array.isArray(value)
 const semanticJson=(value:unknown):string=>Array.isArray(value)?`[${value.map(semanticJson).join(',')}]`:isObject(value)?`{${Object.keys(value).sort().map((key)=>`${JSON.stringify(key)}:${semanticJson(value[key])}`).join(',')}}`:(JSON.stringify(value)??'undefined')
 const isIso=(value:unknown)=>typeof value==='string'&&/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(value)&&!Number.isNaN(Date.parse(value))
 const isDate=(value:unknown)=>typeof value==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(value)&&!Number.isNaN(Date.parse(`${value}T00:00:00Z`))
+export const isSafeHttpsUrl=(value:string)=>{if(!value||value.trim()!==value||/[\\\s]/u.test(value)||Array.from(value).some((character)=>{const code=character.charCodeAt(0);return code<=31||code===127})||value.startsWith('//'))return false;try{const authority=value.slice('https://'.length).split(/[/?#]/,1)[0],rawHost=authority.replace(/:\d+$/,'');if(!value.startsWith('https://')||!authority||/[^\u0020-\u007E]/u.test(rawHost)||rawHost.startsWith('[')||rawHost.endsWith(']'))return false;const url=new URL(value),hostname=url.hostname;if(url.protocol!=='https:'||url.username||url.password||!hostname||url.port==='0'||hostname.includes(':')||hostname.includes('..')||(/^[\d.]+$/.test(rawHost)&&rawHost!==hostname))return false;if(/^\d+(?:\.\d+){3}$/.test(hostname))return hostname.split('.').every((part)=>String(Number(part))===part&&Number(part)<=255);return hostname.length<=253&&hostname.split('.').every((label)=>/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(label))}catch{return false}}
 const authoritativeById=new Map(initialTasks.map((task)=>[task.id,task]))
 const stringArray=(value:unknown)=>Array.isArray(value)&&value.length>0&&value.every((item)=>typeof item==='string'&&item.trim().length>0)
 
@@ -78,9 +79,20 @@ function validateGraph(tasks:Task[],issues:ValidationIssue[]){
 function validateFlow(value:unknown,issues:ValidationIssue[],validTaskIds:Set<string>):value is FlowData{
   if(!isObject(value)||!Array.isArray(value.nodes)||!Array.isArray(value.edges)||!isObject(value.viewport)){issues.push({path:'flow',message:'nodes/edges/viewportが必要です'});return false}
   if(value.nodes.length>LIMITS.nodes||value.edges.length>LIMITS.edges)issues.push({path:'flow',message:'件数上限を超えています'})
+  const validateTaskData=(data:Record<string,unknown>,path:string,isNode:boolean)=>{
+    const taskIds=data.taskIds
+    if(taskIds!==undefined&&(!Array.isArray(taskIds)||taskIds.some((id)=>typeof id!=='string'||!id||!validTaskIds.has(id))))issues.push({path:`${path}.taskIds`,message:'存在しないactive task参照があります'})
+    if(typeof data.taskId==='string'&&!validTaskIds.has(data.taskId))issues.push({path:`${path}.taskId`,message:'存在しないactive task参照があります'})
+    if(data.targetType!=='task')return
+    if(typeof data.targetId!=='string'||!data.targetId||!validTaskIds.has(data.targetId))issues.push({path:`${path}.targetId`,message:'有効なtask targetIdが必要です'})
+    if(typeof data.taskId!=='string'||!data.taskId||!validTaskIds.has(data.taskId))issues.push({path:`${path}.taskId`,message:'有効なtaskIdが必要です'})
+    if(typeof data.targetId==='string'&&typeof data.taskId==='string'&&data.targetId!==data.taskId)issues.push({path:`${path}.taskId`,message:'taskIdはtargetIdと一致する必要があります'})
+    if(isNode&&(!Array.isArray(taskIds)||(typeof data.taskId==='string'&&!taskIds.includes(data.taskId))))issues.push({path:`${path}.taskIds`,message:'task-target nodeはtaskIdを含むtaskIdsが必要です'})
+  }
   const ids:string[]=[];(value.nodes as unknown[]).forEach((node,index)=>{if(!isObject(node)||typeof node.id!=='string'||!node.id||!isObject(node.position)||typeof node.position.x!=='number'||!Number.isFinite(node.position.x)||typeof node.position.y!=='number'||!Number.isFinite(node.position.y)||!isObject(node.data))issues.push({path:`flow.nodes[${index}]`,message:'id/finite position/dataが必要です'});else{ids.push(node.id);const refs=node.data.taskIds;if(refs!==undefined&&(!Array.isArray(refs)||refs.some((id)=>typeof id!=='string'||!validTaskIds.has(id))))issues.push({path:`flow.nodes[${index}].data.taskIds`,message:'存在しないタスク参照があります'});if(node.id.startsWith('weekly-complete:')&&(node.data.weeklyKind!=='completion'||typeof node.data.taskId!=='string'||node.id!==`weekly-complete:${node.data.taskId}`||!validTaskIds.has(node.data.taskId)))issues.push({path:`flow.nodes[${index}].data`,message:'完了付箋メタデータが不正です'});if(node.id.startsWith('weekly-summary:')&&(node.data.weeklyKind!=='summary'||typeof node.data.runId!=='string'||node.id!==`weekly-summary:${node.data.runId}`))issues.push({path:`flow.nodes[${index}].data`,message:'週次summaryメタデータが不正です'})}})
+  ;(value.nodes as unknown[]).forEach((node,index)=>{if(isObject(node)&&isObject(node.data))validateTaskData(node.data,`flow.nodes[${index}].data`,true)})
   const idSet=new Set(ids);if(idSet.size!==ids.length)issues.push({path:'flow.nodes',message:'ノードIDが重複しています'})
-  const edgeIds:string[]=[];(value.edges as unknown[]).forEach((edge,index)=>{if(!isObject(edge)||typeof edge.id!=='string'||!edge.id||typeof edge.source!=='string'||typeof edge.target!=='string'||!idSet.has(String(edge.source))||!idSet.has(String(edge.target))||edge.source===edge.target)issues.push({path:`flow.edges[${index}]`,message:'接続が不正です'});else edgeIds.push(edge.id)})
+  const edgeIds:string[]=[];(value.edges as unknown[]).forEach((edge,index)=>{if(!isObject(edge)||typeof edge.id!=='string'||!edge.id||typeof edge.source!=='string'||typeof edge.target!=='string'||!idSet.has(String(edge.source))||!idSet.has(String(edge.target))||edge.source===edge.target)issues.push({path:`flow.edges[${index}]`,message:'接続が不正です'});else{edgeIds.push(edge.id);if(isObject(edge.data))validateTaskData(edge.data,`flow.edges[${index}].data`,false)}})
   if(new Set(edgeIds).size!==edgeIds.length)issues.push({path:'flow.edges',message:'エッジIDが重複しています'})
   if(typeof value.viewport.x!=='number'||!Number.isFinite(value.viewport.x)||typeof value.viewport.y!=='number'||!Number.isFinite(value.viewport.y)||typeof value.viewport.zoom!=='number'||!Number.isFinite(value.viewport.zoom)||Number(value.viewport.zoom)<=0)issues.push({path:'flow.viewport',message:'finite x/y/正のzoomが必要です'})
   return true
@@ -129,7 +141,26 @@ export function validateBundle(value:unknown):ValidationIssue[]{
   if(!Array.isArray(value.tasks))issues.push({path:'tasks',message:'配列が必要です'})
   else {if(value.tasks.length>LIMITS.tasks)issues.push({path:'tasks',message:'件数上限を超えています'});value.tasks.forEach((task,index)=>validateTask(task,index,issues));const ids=activeTasks.map((task)=>task.id),fingerprints=activeTasks.map((task)=>task.fingerprint).filter((item):item is string=>typeof item==='string');if(new Set(ids).size!==ids.length)issues.push({path:'tasks',message:'タスクIDが重複しています'});if(new Set(fingerprints).size!==fingerprints.length)issues.push({path:'tasks',message:'自動タスクfingerprintが重複しています'});validateGraph(activeTasks,issues)}
   const validTaskIds=new Set<string>(Array.isArray(value.tasks)?(value.tasks as unknown[]).filter(isObject).map((task)=>String(task.id)):[])
-  if(Array.isArray(value.migrationArchive))value.migrationArchive.forEach((archive)=>{if(isObject(archive)&&Array.isArray(archive.tasks))archive.tasks.forEach((task)=>{if(isObject(task)&&typeof task.id==='string')validTaskIds.add(task.id)})})
+  if(value.taskResults!==undefined&&!Array.isArray(value.taskResults))issues.push({path:'taskResults',message:'成果シート配列が必要です'})
+  else if(Array.isArray(value.taskResults)) {
+    const resultIds:string[]=[],resultTaskIds:string[]=[]
+    value.taskResults.forEach((result,index)=>{
+      const path=`taskResults[${index}]`
+      if(!isObject(result)){issues.push({path,message:'オブジェクトが必要です'});return}
+      for(const [field,limit] of [['resultBody',10000],['verificationSummary',4000],['nextStep',4000],['completionCriteria',4000],['verificationMemo',10000]] as const)if(typeof result[field]!=='string'||result[field].length>limit)issues.push({path:`${path}.${field}`,message:`${limit}文字以下の文字列が必要です`})
+      if(typeof result.taskId!=='string'||result.taskId.length>244||!validTaskIds.has(result.taskId))issues.push({path:`${path}.taskId`,message:'244文字以下で存在するtaskへの参照が必要です'})
+      if(typeof result.id!=='string'||result.id.length>256||result.id!==`task-result:${result.taskId}`)issues.push({path:`${path}.id`,message:'256文字以下のtask-result:<taskId>形式が必要です'})
+      if(!verificationStates.includes(result.verificationState as never))issues.push({path:`${path}.verificationState`,message:'確認状態が不正です'})
+      if(result.verifiedBy!==undefined&&(typeof result.verifiedBy!=='string'||result.verifiedBy.length>200))issues.push({path:`${path}.verifiedBy`,message:'200文字以下です'})
+      if(result.verifiedAt!==undefined&&!isIso(result.verifiedAt))issues.push({path:`${path}.verifiedAt`,message:'ISO日時が必要です'})
+      if(!isIso(result.updatedAt))issues.push({path:`${path}.updatedAt`,message:'ISO日時が必要です'})
+      if(!Array.isArray(result.deliverables)||result.deliverables.length>32)issues.push({path:`${path}.deliverables`,message:'32件以下の配列が必要です'})
+      else {const ids:string[]=[];result.deliverables.forEach((item,itemIndex)=>{const itemPath=`${path}.deliverables[${itemIndex}]`;if(!isObject(item)){issues.push({path:itemPath,message:'オブジェクトが必要です'});return}if(typeof item.id!=='string'||!item.id.trim())issues.push({path:`${itemPath}.id`,message:'一意IDが必要です'});else ids.push(item.id);if(typeof item.title!=='string'||!item.title.trim()||item.title.length>200)issues.push({path:`${itemPath}.title`,message:'1〜200文字が必要です'});if(!deliverableTypes.includes(item.type as never))issues.push({path:`${itemPath}.type`,message:'種別が不正です'});if(typeof item.href!=='string'||item.href.length>2048||!isSafeHttpsUrl(item.href))issues.push({path:`${itemPath}.href`,message:'userinfoなしのhttps URLが必要です'});if(item.note!==undefined&&(typeof item.note!=='string'||item.note.length>1000))issues.push({path:`${itemPath}.note`,message:'1000文字以下です'});if(!deliverableAccessStates.includes(item.accessState as never))issues.push({path:`${itemPath}.accessState`,message:'アクセス状態が不正です'});if(item.lastCheckedAt!==undefined&&!isIso(item.lastCheckedAt))issues.push({path:`${itemPath}.lastCheckedAt`,message:'ISO日時が必要です'})});if(new Set(ids).size!==ids.length)issues.push({path:`${path}.deliverables`,message:'IDが重複しています'})}
+      if(Array.isArray(result.deliverables))result.deliverables.forEach((item,itemIndex)=>{if(isObject(item)&&typeof item.id==='string'&&item.id.length>100)issues.push({path:`${path}.deliverables[${itemIndex}].id`,message:'100文字以下のIDが必要です'})})
+      if(typeof result.id==='string')resultIds.push(result.id);if(typeof result.taskId==='string')resultTaskIds.push(result.taskId)
+    })
+    if(new Set(resultIds).size!==resultIds.length||new Set(resultTaskIds).size!==resultTaskIds.length)issues.push({path:'taskResults',message:'1 taskに1枚の成果シートです'})
+  }
   validateFlow(value.flow,issues,validTaskIds)
   validateAudit(value.audit,issues)
   if(!Array.isArray(value.kpis)||value.kpis.some((kpi)=>!isObject(kpi)||typeof kpi.id!=='string'||typeof kpi.target!=='number'||!Number.isFinite(kpi.target)||kpi.target<0||!(kpi.actual===null||(typeof kpi.actual==='number'&&Number.isFinite(kpi.actual)&&kpi.actual>=0))))issues.push({path:'kpis',message:'KPIはfiniteかつ0以上である必要があります'})
@@ -147,17 +178,17 @@ function migrate(value:unknown):{bundle:ExportBundle;changed:boolean}|null{
   if(value.schemaVersion===4){
     const bundle=value as unknown as ExportBundle
     const normalized=Array.isArray(bundle.tasks)?bundle.tasks.map(normalizeAutoTask):[],savedIds=new Set(normalized.map(({task})=>task.id)),missing=initialTasks.filter((task)=>!savedIds.has(task.id)),tasks=[...normalized.map(({task})=>task),...missing],tombstones=bundle.weekly&&Array.isArray(bundle.weekly.tombstones)?Array.from(new Set(bundle.weekly.tombstones.map(canonicalizeLegacyFingerprint))):bundle.weekly?.tombstones,runs=new Map((bundle.weekly?.runs??[]).map((run)=>[run.runId,run])),nodes=(bundle.flow?.nodes??[]).map((node)=>{if(!node.id.startsWith('weekly-summary:'))return node;const run=runs.get(node.id.slice('weekly-summary:'.length));if(!run||node.data.snapshot!==undefined&&node.data.scheduledFor!==undefined)return node;return{...node,data:{...node.data,scheduledFor:run.scheduledFor,snapshot:run.snapshot}}}),flowChanged=JSON.stringify(nodes)!==JSON.stringify(bundle.flow?.nodes)
-    const changed=missing.length>0||normalized.some((item)=>item.changed)||JSON.stringify(tombstones)!==JSON.stringify(bundle.weekly?.tombstones)||flowChanged
-    return {bundle:changed?{...bundle,tasks,flow:{...bundle.flow,nodes},weekly:{...bundle.weekly,tombstones:tombstones??[]},exportedAt:now()}:bundle,changed}
+    const taskResults=Array.isArray(bundle.taskResults)?bundle.taskResults:[],changed=missing.length>0||!Array.isArray(bundle.taskResults)||normalized.some((item)=>item.changed)||JSON.stringify(tombstones)!==JSON.stringify(bundle.weekly?.tombstones)||flowChanged
+    return {bundle:changed?{...bundle,tasks,taskResults,flow:{...bundle.flow,nodes},weekly:{...bundle.weekly,tombstones:tombstones??[]},exportedAt:now()}:bundle,changed}
   }
   if(value.schemaVersion===3&&Array.isArray(value.tasks)){
     const savedIds=new Set((value.tasks as Task[]).map((task)=>task.id)),missing=initialTasks.filter((task)=>!savedIds.has(task.id))
-    return {changed:true,bundle:{...(value as unknown as Omit<ExportBundle,'schemaVersion'|'weekly'>),schemaVersion:4,tasks:[...(value.tasks as Task[]),...missing],exportedAt:now(),weekly:emptyWeeklyState()}}
+    return {changed:true,bundle:{...(value as unknown as Omit<ExportBundle,'schemaVersion'|'weekly'|'taskResults'>),schemaVersion:4,tasks:[...(value.tasks as Task[]),...missing],taskResults:[],exportedAt:now(),weekly:emptyWeeklyState()}}
   }
   if(value.schemaVersion===2&&Array.isArray(value.tasks)){
     const flow=isObject(value.flow)?value.flow as unknown as FlowData:initialFlow
     const audit=Array.isArray(value.audit)?value.audit as AuditItem[]:[]
-    return {changed:true,bundle:{schemaVersion:4,exportedAt:now(),tasks:initialTasks,flow,audit:[...initialAudit,...audit],kpis:initialKpis,reportBaseline:null,migrationArchive:[{fromSchema:2,migratedAt:now(),reason:'旧39件を重複表示せず、S4の73件を正本化',tasks:value.tasks}],weekly:emptyWeeklyState()}}
+    return {changed:true,bundle:{schemaVersion:4,exportedAt:now(),tasks:initialTasks,taskResults:[],flow,audit:[...initialAudit,...audit],kpis:initialKpis,reportBaseline:null,migrationArchive:[{fromSchema:2,migratedAt:now(),reason:'旧39件を重複表示せず、S4の73件を正本化',tasks:value.tasks}],weekly:emptyWeeklyState()}}
   }
   return null
 }

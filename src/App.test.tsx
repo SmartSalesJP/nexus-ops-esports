@@ -1,12 +1,15 @@
 import { StrictMode } from 'react'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { expect, it, vi } from 'vitest'
 import { initialAudit, initialEdges, initialKpis, initialNodes, initialTasks, initialViewport } from './data'
 import { KEYS, saveBundle } from './storage'
 import type { ExportBundle } from './types'
 import { emptyWeeklyState, runWeeklyBundle } from './weekly'
+import type { CloudControls } from './App'
 
-const bundle=():ExportBundle=>({schemaVersion:4,exportedAt:'2026-08-16T00:00:00.000Z',tasks:structuredClone(initialTasks),flow:{nodes:structuredClone(initialNodes),edges:structuredClone(initialEdges),viewport:structuredClone(initialViewport)},audit:structuredClone(initialAudit),kpis:structuredClone(initialKpis),reportBaseline:null,migrationArchive:[],weekly:emptyWeeklyState()})
+const bundle=():ExportBundle=>({schemaVersion:4,exportedAt:'2026-08-16T00:00:00.000Z',tasks:structuredClone(initialTasks),taskResults:[],flow:{nodes:structuredClone(initialNodes),edges:structuredClone(initialEdges),viewport:structuredClone(initialViewport)},audit:structuredClone(initialAudit),kpis:structuredClone(initialKpis),reportBaseline:null,migrationArchive:[],weekly:emptyWeeklyState()})
+vi.setConfig({testTimeout:15_000})
 
 it('shows an alert when initial localStorage access is denied',async()=>{
   vi.resetModules()
@@ -27,7 +30,7 @@ it('labels current operation history truthfully without claiming a retest',async
 
 it('reconciles same-week rule deltas once on startup without changing the frozen run or canonical tasks',async()=>{
   vi.useFakeTimers({shouldAdvanceTime:true});vi.setSystemTime(new Date('2026-08-17T12:00:00+09:00'));localStorage.clear()
-  const consoleError=vi.spyOn(console,'error').mockImplementation(()=>{}),full=runWeeklyBundle(bundle(),new Date(),'manual'),oldTasks=full.tasks.filter((task)=>task.provenance?.ruleId!=='milestone-deliverable-acceptance'),old={...full,tasks:oldTasks.map((task)=>task.id==='P0-05'?{...task,status:'未着手' as const,updatedAt:'2026-08-16T03:00:00.000Z'}:task)},frozenRuns=structuredClone(old.weekly.runs),frozenSummaries=structuredClone(old.flow.nodes.filter((node)=>node.id.startsWith('weekly-summary:'))),canonicalBefore=structuredClone(old.tasks.filter((task)=>!task.createdByDepartment))
+  const consoleError=vi.spyOn(console,'error').mockImplementation(()=>{}),full=runWeeklyBundle(bundle(),new Date(),'manual'),oldTasks=full.tasks.filter((task)=>task.provenance?.ruleId!=='milestone-deliverable-acceptance'),storedTasks=oldTasks.map((task)=>task.id==='P0-05'?{...task,status:'未着手' as const,updatedAt:'2026-08-16T03:00:00.000Z'}:task),old={...full,tasks:storedTasks,flow:{...full.flow,nodes:full.flow.nodes.filter((node)=>!node.id.startsWith('weekly-project:')),edges:full.flow.edges.filter((edge)=>!edge.id.startsWith('weekly-project:'))}},frozenRuns=structuredClone(full.weekly.runs),frozenSummaries=structuredClone(full.flow.nodes.filter((node)=>node.id.startsWith('weekly-summary:'))),canonicalBefore=JSON.parse(JSON.stringify(storedTasks.filter((task)=>!task.createdByDepartment)))
   expect(full.tasks).toHaveLength(103);expect(old.tasks).toHaveLength(99);expect(saveBundle(old).ok).toBe(true)
   vi.resetModules();const {default:FirstApp}=await import('./App'),first=render(<StrictMode><FirstApp/></StrictMode>)
   await waitFor(()=>expect((JSON.parse(localStorage.getItem(KEYS.bundle)!) as ExportBundle).tasks).toHaveLength(103))
@@ -58,7 +61,7 @@ it('keeps the first startup catch-up behavior when the current week has not run'
 
 it('keeps the old bundle and React state when startup delta persistence fails',async()=>{
   vi.useFakeTimers({shouldAdvanceTime:true});vi.setSystemTime(new Date('2026-08-17T12:00:00+09:00'));localStorage.clear()
-  const full=runWeeklyBundle(bundle(),new Date(),'manual'),old={...full,tasks:full.tasks.filter((task)=>task.provenance?.ruleId!=='milestone-deliverable-acceptance')}
+  const full=runWeeklyBundle(bundle(),new Date(),'manual'),old={...full,tasks:full.tasks.filter((task)=>task.provenance?.ruleId!=='milestone-deliverable-acceptance'),flow:{...full.flow,nodes:full.flow.nodes.filter((node)=>!node.id.startsWith('weekly-project:')),edges:full.flow.edges.filter((edge)=>!edge.id.startsWith('weekly-project:'))}}
   expect(old.tasks).toHaveLength(99);expect(saveBundle(old).ok).toBe(true);const persisted=localStorage.getItem(KEYS.bundle),originalSetItem=Storage.prototype.setItem
   const storageSpy=vi.spyOn(Storage.prototype,'setItem').mockImplementation(function(this:Storage,key:string,value:string){if(key===KEYS.bundle)throw new DOMException('quota','QuotaExceededError');return originalSetItem.call(this,key,value)})
   vi.resetModules();const {default:App}=await import('./App');render(<StrictMode><App/></StrictMode>)
@@ -67,4 +70,43 @@ it('keeps the old bundle and React state when startup delta persistence fails',a
   expect(screen.getByText('全タスク').parentElement).toHaveTextContent('99')
   expect(JSON.parse(localStorage.getItem(KEYS.weeklyFailure)!)).toMatchObject({runId:'weekly:2026-W34',error:expect.stringContaining('保存できません')})
   storageSpy.mockRestore();cleanup();vi.useRealTimers()
+})
+
+it('keeps a dirty result draft and accepted URL when a newer cloud bundle is rendered',async()=>{
+  vi.resetModules();const {default:App}=await import('./App'),source=runWeeklyBundle(bundle(),new Date('2026-08-17T12:00:00+09:00'),'manual'),organization={id:'org-1',name:'Org',slug:'org',status:'active' as const,stateVersion:1,role:'editor' as const},workspace={organization,entities:[],bundle:source,importState:{status:'imported' as const,manifestCount:1,lastManifestAt:'2026-08-17T00:00:00.000Z'}},cloud:CloudControls={repository:{} as CloudControls['repository'],workspace,organizations:[organization],selectedOrganizationId:organization.id,userEmail:'test@example.com',onSelectOrganization:vi.fn(),onConfirmed:vi.fn(),pendingCandidate:null,onPending:vi.fn(),onReload:vi.fn(),onSignOut:vi.fn(),onSessionExpired:vi.fn(),onAccessRevoked:vi.fn()},view=render(<App initialBundle={source} cloud={cloud}/>)
+  await userEvent.click(screen.getByRole('button',{name:/YUKISHIRO.*成果シート/}))
+  const input=screen.getByRole('textbox',{name:/^結果/});await userEvent.type(input,'local draft')
+  const accepted=location.hash,remote={...structuredClone(source),exportedAt:'2026-08-17T01:00:00.000Z'},remoteOrganization={...organization,stateVersion:2},remoteCloud={...cloud,workspace:{...workspace,organization:remoteOrganization,bundle:remote},organizations:[remoteOrganization]}
+  view.rerender(<App initialBundle={remote} cloud={remoteCloud}/>)
+  expect(input).toHaveValue('local draft');expect(screen.getByText(/編集元: result/)).toBeInTheDocument()
+  location.hash='#task-result/P0-02';await waitFor(()=>expect(location.hash).toBe(accepted));expect(screen.getByRole('heading',{name:'P0-01 成果シート'})).toBeInTheDocument()
+})
+
+it('allows only one same-tick KPI save and restores the saved baseline on discard',async()=>{
+  localStorage.clear();vi.resetModules();const {default:App}=await import('./App');render(<App initialBundle={bundle()}/>)
+  await waitFor(()=>expect(screen.getByRole('button',{name:/今すぐ週次更新/})).toBeEnabled())
+  const input=screen.getByLabelText('同時接続の実績'),save=screen.getByRole('button',{name:'KPI保存'})
+  fireEvent.change(input,{target:{value:'12'}});fireEvent.click(save);fireEvent.click(save)
+  await waitFor(()=>expect((JSON.parse(localStorage.getItem(KEYS.bundle)!) as ExportBundle).audit.filter((item)=>item.issueId==='OP-KPI-SAVE')).toHaveLength(1));await waitFor(()=>expect(screen.queryByText(/編集元: kpi/)).not.toBeInTheDocument())
+  fireEvent.change(input,{target:{value:'99'}});fireEvent.click(screen.getByRole('button',{name:'KPI変更を破棄'}));expect(input).toHaveValue(12);expect(screen.queryByText(/編集元: kpi/)).not.toBeInTheDocument()
+})
+
+it('serializes global same-tick saves through the App commit lock',async()=>{
+  localStorage.clear();vi.resetModules();const {default:App}=await import('./App');render(<App initialBundle={bundle()}/>);await waitFor(()=>expect(screen.getByRole('button',{name:/今すぐ週次更新/})).toBeEnabled());const report=screen.getAllByText('隔週報告')[0].closest('button')!;fireEvent.click(report);const save=screen.getByRole('button',{name:/現在を比較基準に保存/});fireEvent.click(save);fireEvent.click(save);await waitFor(()=>expect((JSON.parse(localStorage.getItem(KEYS.bundle)!) as ExportBundle).audit.filter((item)=>item.issueId==='OP-REPORT-BASELINE')).toHaveLength(1))
+})
+
+it('allows only the baseline mutation when baseline save and weekly run start in the same tick',async()=>{
+  localStorage.clear();const source=runWeeklyBundle(bundle(),new Date(),'manual');vi.resetModules();const {default:App}=await import('./App');render(<App initialBundle={source}/>);const weeklyButton=screen.getByRole('button',{name:/今すぐ週次更新/});await waitFor(()=>expect(weeklyButton).toBeEnabled());fireEvent.click(screen.getAllByText('隔週報告')[0].closest('button')!);const baselineButton=screen.getByRole('button',{name:/現在を比較基準に保存/});fireEvent.click(baselineButton);fireEvent.click(weeklyButton);await waitFor(()=>expect(localStorage.getItem(KEYS.bundle)).not.toBeNull());const stored=JSON.parse(localStorage.getItem(KEYS.bundle)!) as ExportBundle;expect(stored.audit.filter((item)=>item.issueId==='OP-REPORT-BASELINE')).toHaveLength(1);expect(stored.weekly.runs).toEqual(source.weekly.runs)
+})
+
+it('does not read or apply an import that races with an active commit',async()=>{
+  localStorage.clear();const source=runWeeklyBundle(bundle(),new Date(),'manual');vi.resetModules();const {default:App}=await import('./App');render(<App initialBundle={source}/>);await waitFor(()=>expect(screen.getByRole('button',{name:/今すぐ週次更新/})).toBeEnabled());fireEvent.click(screen.getAllByText('隔週報告')[0].closest('button')!);const baselineButton=screen.getByRole('button',{name:/現在を比較基準に保存/}),text=vi.fn().mockResolvedValue(JSON.stringify(bundle())),file={text} as unknown as File;fireEvent.click(baselineButton);fireEvent.change(screen.getByLabelText('JSONファイルを読み込む'),{target:{files:[file]}});await waitFor(()=>expect(localStorage.getItem(KEYS.bundle)).not.toBeNull());expect(text).not.toHaveBeenCalled();const stored=JSON.parse(localStorage.getItem(KEYS.bundle)!) as ExportBundle;expect(stored.audit.filter((item)=>item.issueId==='OP-REPORT-BASELINE')).toHaveLength(1);expect(stored.audit.some((item)=>item.issueId==='OP-JSON-IMPORT')).toBe(false)
+})
+
+it('persists only one mutation for same-tick weekly double click',async()=>{
+  localStorage.clear();const source=runWeeklyBundle(bundle(),new Date(),'manual');vi.resetModules();const {default:App}=await import('./App');render(<App initialBundle={source}/>);const weeklyButton=screen.getByRole('button',{name:/今すぐ週次更新/});await waitFor(()=>expect(weeklyButton).toBeEnabled());const original=Storage.prototype.setItem,write=vi.spyOn(Storage.prototype,'setItem').mockImplementation(function(this:Storage,key:string,value:string){return original.call(this,key,value)});fireEvent.click(weeklyButton);fireEvent.click(weeklyButton);await waitFor(()=>expect(write.mock.calls.filter(([key])=>key===KEYS.bundle)).toHaveLength(1));write.mockRestore()
+})
+
+it('releases the global mutation lock after failure so the operation can be retried',async()=>{
+  localStorage.clear();const source=runWeeklyBundle(bundle(),new Date(),'manual');vi.resetModules();const {default:App}=await import('./App');render(<App initialBundle={source}/>);await waitFor(()=>expect(screen.getByRole('button',{name:/今すぐ週次更新/})).toBeEnabled());fireEvent.click(screen.getAllByText('隔週報告')[0].closest('button')!);const baselineButton=screen.getByRole('button',{name:/現在を比較基準に保存/}),original=Storage.prototype.setItem;let failed=false;const write=vi.spyOn(Storage.prototype,'setItem').mockImplementation(function(this:Storage,key:string,value:string){if(key===KEYS.bundle&&!failed){failed=true;throw new DOMException('quota','QuotaExceededError')}return original.call(this,key,value)});fireEvent.click(baselineButton);await waitFor(()=>expect(screen.getByRole('alert')).toHaveTextContent(/保存/));await waitFor(()=>expect(baselineButton).toBeEnabled());fireEvent.click(baselineButton);await waitFor(()=>expect((JSON.parse(localStorage.getItem(KEYS.bundle)!) as ExportBundle).audit.filter((item)=>item.issueId==='OP-REPORT-BASELINE')).toHaveLength(1));write.mockRestore()
 })

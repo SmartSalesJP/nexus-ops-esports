@@ -1,5 +1,5 @@
 import type { Node } from '@xyflow/react'
-import type { AuditItem, AutoTaskProvenance, CompletionHistory, ExportBundle, FlowData, KpiValue, Task, WeeklyRun, WeeklySnapshot, WeeklyState } from './types'
+import type { AuditItem, AutoTaskProvenance, CompletionHistory, ExportBundle, FlowData, KpiValue, Task, TaskResultSheet, WeeklyRun, WeeklySnapshot, WeeklyState } from './types'
 
 const DAY=86_400_000
 const JST=9*60*60*1000
@@ -69,10 +69,25 @@ export function createWeeklySnapshot(tasks:Task[],kpis:KpiValue[]):WeeklySnapsho
 const completionNode=(history:CompletionHistory,task:Task,position:{x:number;y:number}):Node=>({
   id:`weekly-complete:${task.id}`,position,
   className:`weekly-sticky weekly-completion ${history.currentStatus==='完了'?'is-current':'is-reopened'}`,
-  data:{weeklyKind:'completion',label:`${history.currentStatus==='完了'?'✓ 完了':'↺ 再オープン'} ${task.id}\n${task.title}\n完了日時: ${history.firstSeen}${history.basis==='inferred-from-updatedAt'?'（更新日時から推定）':''}\n週: ${history.completedWeek}\n担当: ${task.rawAssignees||task.owner}\nPhase ${task.phase}\n現在: ${history.currentStatus}`,taskIds:[task.id],taskId:task.id,firstSeen:history.firstSeen,lastConfirmed:history.lastConfirmed,completedWeek:history.completedWeek,basis:history.basis,currentStatus:history.currentStatus},
+  data:{managedBy:'weekly-project-graph',managedVersion:1,targetType:'task-completion',targetId:task.id,weeklyKind:'completion',label:`${history.currentStatus==='完了'?'✓ 完了':'↺ 再オープン'} ${task.id}\n${task.title}\n完了日時: ${history.firstSeen}${history.basis==='inferred-from-updatedAt'?'（更新日時から推定）':''}\n週: ${history.completedWeek}\n担当: ${task.rawAssignees||task.owner}\nPhase ${task.phase}\n現在: ${history.currentStatus}`,taskIds:[task.id],taskId:task.id,firstSeen:history.firstSeen,lastConfirmed:history.lastConfirmed,completedWeek:history.completedWeek,basis:history.basis,currentStatus:history.currentStatus},
 })
 
 const managedPosition=(flow:FlowData,index:number)=>{const user=flow.nodes.filter((node)=>!String(node.id).startsWith('weekly-')),maxX=user.length?Math.max(...user.map((node)=>node.position.x)):0,minY=user.length?Math.min(...user.map((node)=>node.position.y)):0;return{x:maxX+360+(index%2)*300,y:minY+Math.floor(index/2)*230}}
+
+const GRAPH_PREFIX='weekly-project:'
+function syncManagedProjectGraph(flow:FlowData,tasks:Task[],results:TaskResultSheet[]):FlowData{
+  const collision=flow.nodes.some((node)=>node.id.startsWith(GRAPH_PREFIX)&&(node.data as {managedBy?:unknown}).managedBy!=='weekly-project-graph')||flow.edges.some((edge)=>edge.id.startsWith(GRAPH_PREFIX)&&(edge.data as {managedBy?:unknown}|undefined)?.managedBy!=='weekly-project-graph')
+  if(collision)throw new Error('予約済みweekly-project namespaceに手動要素があるため、週次graph更新を中止しました')
+  const existing=new Map(flow.nodes.filter((node)=>node.id.startsWith(GRAPH_PREFIX)).map((node)=>[node.id,node])),resultByTask=new Map(results.map((result)=>[result.taskId,result]))
+  const position=(id:string,fallback:{x:number;y:number})=>existing.get(id)?.position??fallback
+  const managedData=(data:Record<string,unknown>)=>({managedBy:'weekly-project-graph',managedVersion:1,...data})
+  const nodes:Node[]=[{id:`${GRAPH_PREFIX}project`,position:position(`${GRAPH_PREFIX}project`,{x:80,y:80}),className:'weekly-project-node project',data:managedData({targetType:'project',targetId:'esports-project',label:'プロジェクト\n必要物 → 進行 → 完了後',ariaLabel:'週次プロジェクト。必要物、進行、完了後の順'})}]
+  const edges=flow.edges.filter((edge)=>!edge.id.startsWith(GRAPH_PREFIX))
+  for(const phase of [0,1,2,3,4,5,6] as const){const phaseTasks=tasks.filter((task)=>task.phase===phase).sort((a,b)=>a.id.localeCompare(b.id)),phaseId=`${GRAPH_PREFIX}phase:${phase}`;nodes.push({id:phaseId,position:position(phaseId,{x:420,y:80+phase*260}),className:'weekly-project-node phase',data:managedData({targetType:'phase',targetId:String(phase),label:`Phase ${phase}\n${phaseTasks.filter((task)=>task.status==='完了').length}/${phaseTasks.length} 完了`,ariaLabel:`Phase ${phase}。${phaseTasks.length}件中${phaseTasks.filter((task)=>task.status==='完了').length}件完了`})});edges.push({id:`${GRAPH_PREFIX}edge:project:phase:${phase}`,source:`${GRAPH_PREFIX}project`,target:phaseId,data:managedData({targetType:'phase',targetId:String(phase)})})
+    phaseTasks.forEach((task,index)=>{const id=`${GRAPH_PREFIX}task:${task.id}`,result=resultByTask.get(task.id),blocked=task.status!=='完了'&&task.dependencies.some((dependency)=>tasks.find((item)=>item.id===dependency)?.status!=='完了'),section=task.status==='完了'?'完了後':blocked?'必要物':'進行',resultText=result?`成果登録あり / ${result.verificationState} / deliverable ${result.deliverables.length}件`:'成果未登録';nodes.push({id,position:position(id,{x:760+(index%3)*300,y:80+phase*260+Math.floor(index/3)*150}),className:`weekly-project-node task section-${section}`,data:managedData({targetType:'task',targetId:task.id,taskId:task.id,taskIds:[task.id],section,label:`${section} | ${task.id}\n${task.title}\n${task.status}${task.status==='完了'?` / ${resultText}`:''}`,ariaLabel:`${section}。${task.id} ${task.title}。${task.status}。${task.status==='完了'?resultText:''}`})});edges.push({id:`${GRAPH_PREFIX}edge:phase:${phase}:task:${task.id}`,source:phaseId,target:id,data:managedData({targetType:'task',targetId:task.id,taskId:task.id})})})
+  }
+  return {...flow,nodes:[...flow.nodes.filter((node)=>!node.id.startsWith(GRAPH_PREFIX)),...nodes],edges}
+}
 
 export function syncTaskCompletion(flow:FlowData,weekly:WeeklyState,task:Task,at:string,basis:'status-change'|'inferred-from-updatedAt'='status-change',confirmedAt=at){
   const completions={...weekly.completions},existing=completions[task.id]
@@ -115,7 +130,7 @@ function autoTasks(tasks:Task[],kpis:KpiValue[],runId:string,scheduledFor:string
   return {tasks:[...tasks,...created],created,reasons}
 }
 
-const summaryNode=(run:WeeklyRun,position:{x:number;y:number}):Node=>({id:`weekly-summary:${run.runId}`,position,className:'weekly-sticky weekly-summary',data:{weeklyKind:'summary',runId:run.runId,scheduledFor:run.scheduledFor,snapshot:run.snapshot,taskIds:[],label:`週次サマリー ${run.runId.replace('weekly:','')}\n完了 ${run.snapshot.completed}/${run.snapshot.total}\n高緊急残 ${run.snapshot.highUrgencyRemaining} / blocker ${run.snapshot.blockers}\n自動追加 ${run.autoTaskCount}件\n未実行週 ${run.missedWeekCount}週`}})
+const summaryNode=(run:WeeklyRun,position:{x:number;y:number}):Node=>({id:`weekly-summary:${run.runId}`,position,className:'weekly-sticky weekly-summary',data:{managedBy:'weekly-project-graph',managedVersion:1,targetType:'weekly-run',targetId:run.runId,weeklyKind:'summary',runId:run.runId,scheduledFor:run.scheduledFor,snapshot:run.snapshot,taskIds:[],label:`週次サマリー ${run.runId.replace('weekly:','')}\n完了 ${run.snapshot.completed}/${run.snapshot.total}\n高緊急残 ${run.snapshot.highUrgencyRemaining} / blocker ${run.snapshot.blockers}\n自動追加 ${run.autoTaskCount}件\n未実行週 ${run.missedWeekCount}週`}})
 const missedWeeks=(last:WeeklyRun|null,scheduledFor:string)=>last?Math.max(0,Math.round((Date.parse(scheduledFor)-Date.parse(last.scheduledFor))/(7*DAY))-1):0
 const stableHash=(value:string)=>{let hash=2166136261;for(let index=0;index<value.length;index++){hash^=value.charCodeAt(index);hash=Math.imul(hash,16777619)}return(hash>>>0).toString(16).padStart(8,'0')}
 
@@ -124,6 +139,7 @@ export function runWeeklyBundle(bundle:ExportBundle,date:Date,trigger:WeeklyRun[
   let flow=bundle.flow,weekly={...bundle.weekly,completions:{...bundle.weekly.completions}},addedStickyCount=0
   generated.tasks.forEach((task)=>{const normalized=task.status==='完了'&&!weekly.completions[task.id]?{...task,updatedAt:task.updatedAt||ranAt}:task,result=syncTaskCompletion(flow,weekly,normalized,normalized.updatedAt,'inferred-from-updatedAt',ranAt);flow=result.flow;weekly=result.weekly;if(result.added)addedStickyCount++})
   if(existingRun){
+    flow=syncManagedProjectGraph(flow,generated.tasks,bundle.taskResults??[])
     let audit=bundle.audit
     if(generated.created.length){const fingerprints=generated.created.map((task)=>task.fingerprint??task.id).sort(),auditItem:AuditItem={id:`weekly-audit:${existingRun.runId}:delta:${stableHash(fingerprints.join('|'))}`,issueId:'OP-WEEKLY-RUN-DELTA',classification:'persistence',targetVersion:'0.4.0',files:['src/weekly.ts','src/App.tsx'],before:'同一週の固定snapshot',after:`追加自動task ${generated.created.length}件`,evidence:['固定snapshotを変更せず差分だけをschema v4 bundleへ保存'],retest:'週次差分実行時の全量検証',residualRisk:'自動提案は要確認',round:4,at:ranAt,action:'操作履歴 · 週次進行差分',detail:`${existingRun.runId}。${generated.reasons.join(' / ')}`};audit=[auditItem,...audit.filter((item)=>item.id!==auditItem.id)]}
     const candidate={...bundle,tasks:generated.tasks,flow,weekly:{...weekly,lastRun:bundle.weekly.lastRun,runs:bundle.weekly.runs},audit}
@@ -132,6 +148,7 @@ export function runWeeklyBundle(bundle:ExportBundle,date:Date,trigger:WeeklyRun[
   const snapshot=createWeeklySnapshot(bundle.tasks,bundle.kpis),run:WeeklyRun={runId:schedule.runId,scheduledFor:schedule.scheduledFor,ranAt,trigger,missedWeekCount:missedWeeks(weekly.lastRun,schedule.scheduledFor),addedStickyCount:addedStickyCount+Number(!flow.nodes.some((node)=>node.id===`weekly-summary:${schedule.runId}`)),autoTaskCount:generated.created.length,outcome:'success',reasons:generated.reasons,snapshot}
   const summaryId=`weekly-summary:${schedule.runId}`,found=flow.nodes.find((node)=>node.id===summaryId),node=summaryNode(run,found?.position??managedPosition(flow,Object.keys(weekly.completions).length));flow={...flow,nodes:found?flow.nodes.map((item)=>item.id===summaryId?{...node,position:item.position}:item):[...flow.nodes,node]}
   const runs=[...weekly.runs.filter((item)=>item.runId!==run.runId),run].sort((a,b)=>a.scheduledFor.localeCompare(b.scheduledFor)).slice(-104),keptRunIds=new Set(runs.map((item)=>item.runId));flow={...flow,nodes:flow.nodes.filter((item)=>!item.id.startsWith('weekly-summary:')||keptRunIds.has(item.id.slice('weekly-summary:'.length)))}
+  flow=syncManagedProjectGraph(flow,generated.tasks,bundle.taskResults??[])
   weekly={...weekly,lastRun:run,runs}
   const auditItem:AuditItem={id:`weekly-audit:${run.runId}`,issueId:'OP-WEEKLY-RUN',classification:'persistence',targetVersion:'0.4.0',files:['src/weekly.ts','src/App.tsx'],before:existingRun?'同一週の既存bundle':'週次未実行bundle',after:`付箋追加 ${run.addedStickyCount}件 / 自動task ${run.autoTaskCount}件`,evidence:['schema v4全量validator通過後の単一bundle保存'],retest:'週次実行時の全量検証',residualRisk:'ブラウザ停止中の厳密00:00実行は保証せず、次回起動時に当週分をcatch-up',round:4,at:ranAt,action:'操作履歴 · 週次進行更新',detail:`${run.runId} (${trigger})。未実行週 ${run.missedWeekCount}。${run.reasons.join(' / ')||'新規提案なし'}`}
   return {...bundle,exportedAt:ranAt,tasks:generated.tasks,flow,weekly,audit:[auditItem,...bundle.audit.filter((item)=>item.id!==auditItem.id)]}
