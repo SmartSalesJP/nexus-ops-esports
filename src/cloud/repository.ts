@@ -13,7 +13,7 @@ import {
   type WorkspaceReadResponse,
   type WorkspaceRole,
 } from './contracts'
-import { bundleToEntities, diffEntities, entitiesToBundle } from './entities'
+import { bundleToEntities, canonicalJson, diffEntities, entitiesToBundle } from './entities'
 import type { PreparedMigrationSource } from './migration'
 import type { Database, Json } from './database.types'
 
@@ -104,7 +104,7 @@ export class SupabaseWorkspaceRepository{
     if(error)throw this.classify(error)
     const applied=parseApply(data)
     if(applied.changedCount!==changes.length)throw new CloudRepositoryError('remote','serverの変更件数が要求と一致しません')
-    return this.confirmCandidate(organizationId,candidate)
+    return this.confirmCandidate(organizationId,candidate,applied.stateVersion)
   }
 
   async importV4(source:PreparedMigrationSource,organizationId:string):Promise<SaveWorkspaceResult>{
@@ -116,7 +116,7 @@ export class SupabaseWorkspaceRepository{
     if(error)throw this.classify(error)
     const imported=parseImportResponse(data)
     if(imported.organizationId!==organizationId||(imported.manifestStatus==='completed'&&imported.changedCount!==source.sourceEntityCount)||(imported.manifestStatus==='already_imported'&&imported.changedCount!==0))throw new CloudRepositoryError('remote','移行結果のorganizationまたはentity件数が一致しません')
-    const confirmed=await this.confirmCandidate(organizationId,source.bundle)
+    const confirmed=await this.confirmCandidate(organizationId,source.bundle,imported.stateVersion)
     if(confirmed.entities.length!==source.sourceEntityCount)throw new CloudRepositoryError('remote','移行後のserver entity件数が移行元と一致しません')
     const marked=writeImportMarker({organizationId,stateVersion:confirmed.organization.stateVersion,manifestId:imported.manifestId,semanticFingerprint:source.semanticFingerprint})
     return marked?confirmed:{...confirmed,cacheWarning:'移行成功マーカーをブラウザへ保存できませんでした'}
@@ -137,9 +137,11 @@ export class SupabaseWorkspaceRepository{
 
   private current(organizationId:string){const current=this.workspaces.get(organizationId);if(!current)throw new CloudRepositoryError('invalid','workspaceを先に読み込んでください');return current}
   private requireOnline(){if(!navigator.onLine)throw new CloudRepositoryError('offline','オフラインです。未保存候補はブラウザ上に保持します')}
-  private async confirmCandidate(organizationId:string,candidate:ExportBundle):Promise<SaveWorkspaceResult>{
-    const confirmed=await this.read(organizationId)
-    if(!confirmed.bundle||JSON.stringify(bundleToComparable(confirmed.bundle))!==JSON.stringify(bundleToComparable(candidate)))throw new CloudRepositoryError('conflict','保存後のserver read-backが候補と一致しません。最新版を確認してください')
+  private async confirmCandidate(organizationId:string,candidate:ExportBundle,expectedStateVersion:number):Promise<SaveWorkspaceResult>{
+    const confirmed=await this.read(organizationId,false)
+    if(confirmed.organization.stateVersion!==expectedStateVersion)throw new CloudRepositoryError('conflict','保存後のserver state versionが保存結果と一致しません。最新版を確認してください')
+    if(!confirmed.bundle||canonicalJson(bundleToComparable(confirmed.bundle))!==canonicalJson(bundleToComparable(candidate)))throw new CloudRepositoryError('conflict','保存後のserver read-backが候補と一致しません。最新版を確認してください')
+    this.workspaces.set(organizationId,confirmed)
     const cached=writeCloudCache(organizationId,confirmed.organization.stateVersion,confirmed.bundle)
     return cached.ok?confirmed:{...confirmed,cacheWarning:cached.error??'検証済みcloud cacheを更新できませんでした'}
   }

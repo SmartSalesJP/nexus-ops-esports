@@ -7,6 +7,14 @@ const ordered=<T>(entities:CloudEntity[],type:EntityType)=>entities.filter((enti
 const singleton=<T>(entities:CloudEntity[],type:EntityType,id='singleton')=>entities.find((entity)=>entity.entityType===type&&entity.entityId===id)?.payload as T|undefined
 const withoutId=<T>(value:{id:string}&T):T=>{const {id:_,...rest}=value;void _;return rest as T}
 
+const orderPersistedJson=(value:unknown):unknown=>Array.isArray(value)?value.map(orderPersistedJson):value&&typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map((key)=>[key,orderPersistedJson((value as Record<string,unknown>)[key])])):value
+
+/** Compare the JSON representation persisted by Supabase without depending on jsonb object-key order. */
+export function canonicalJson(value:unknown):string{
+  const persisted=JSON.stringify(value)
+  return persisted===undefined?'undefined':JSON.stringify(orderPersistedJson(JSON.parse(persisted) as unknown))
+}
+
 export function bundleToEntities(bundle:ExportBundle):CloudEntity[]{
   const rows:CloudEntity[]=[]
   const add=(entityType:EntityType,entityId:string,payload:Record<string,unknown>,ordinal=0)=>rows.push({entityType,entityId,payload,ordinal,version:0})
@@ -43,7 +51,7 @@ export function entitiesToBundle(entities:CloudEntity[],exportedAt:string):Expor
 
 export function diffEntities(current:CloudEntity[],candidate:ExportBundle):EntityChange[]{
   const before=new Map(current.map((entity)=>[key(entity.entityType,entity.entityId),entity])),after=bundleToEntities(candidate),changes:EntityChange[]=[]
-  for(const entity of after){const previous=before.get(key(entity.entityType,entity.entityId));before.delete(key(entity.entityType,entity.entityId));if(!previous||JSON.stringify(previous.payload)!==JSON.stringify(entity.payload)||previous.ordinal!==entity.ordinal)changes.push({entityType:entity.entityType,entityId:entity.entityId,op:'upsert',expectedVersion:previous?.version??0,payload:entity.payload,ordinal:entity.ordinal,...referencesFor(entity),...semanticFingerprintFor(entity)})}
+  for(const entity of after){const previous=before.get(key(entity.entityType,entity.entityId));before.delete(key(entity.entityType,entity.entityId));if(!previous||canonicalJson(previous.payload)!==canonicalJson(entity.payload)||previous.ordinal!==entity.ordinal)changes.push({entityType:entity.entityType,entityId:entity.entityId,op:'upsert',expectedVersion:previous?.version??0,payload:entity.payload,ordinal:entity.ordinal,...referencesFor(entity),...semanticFingerprintFor(entity)})}
   for(const entity of before.values())changes.push({entityType:entity.entityType,entityId:entity.entityId,op:'delete',expectedVersion:entity.version})
   return changes
 }
