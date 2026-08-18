@@ -29,7 +29,7 @@ export type Database={public:{Tables:{
   rpc_save_weekly:{Args:{p_organization_id:string;p_expected_state_version:number;p_changes:Json;p_run_id:string};Returns:Json}
   rpc_import_v4:{Args:{p_organization_id:string;p_expected_state_version:number;p_run_id:string;p_raw_sha256:string;p_semantic_fingerprint:string;p_source_origin:string;p_source_size:number;p_source_entity_count:number;p_entities:Json};Returns:Json}
   rpc_list_memberships:{Args:{p_organization_id:string};Returns:Json}
-  rpc_manage_membership:{Args:{p_organization_id:string;p_user_id:string;p_role:string|null;p_action:string;p_expected_state_version:number;p_expected_membership_version:number;p_run_id:string};Returns:Json}
+  rpc_manage_membership:{Args:{p_organization_id:string;p_user_id:string;p_role:string;p_action:string;p_expected_state_version:number;p_expected_membership_version:number;p_run_id:string};Returns:Json}
 };Enums:{[_ in never]:never};CompositeTypes:{[_ in never]:never}}}
 
 export type Tables<T extends keyof Database['public']['Tables']>=Database['public']['Tables'][T]['Row']

@@ -126,7 +126,7 @@ export class SupabaseWorkspaceRepository{
     const current=this.current(organizationId)
     if(current.organization.role!=='owner')throw new CloudRepositoryError('read_only','membership管理はownerだけが実行できます')
     this.requireOnline()
-    const {data,error}=await this.client.rpc(RPC.manageMembership,{p_organization_id:organizationId,p_user_id:input.userId,p_role:input.role,p_action:input.action,p_expected_state_version:current.organization.stateVersion,p_expected_membership_version:input.expectedMembershipVersion,p_run_id:crypto.randomUUID()})
+    const {data,error}=await this.client.rpc(RPC.manageMembership,{p_organization_id:organizationId,p_user_id:input.userId,p_role:input.role!,p_action:input.action,p_expected_state_version:current.organization.stateVersion,p_expected_membership_version:input.expectedMembershipVersion,p_run_id:crypto.randomUUID()})
     if(error)throw this.classify(error)
     const mutation=parseMembershipMutation(data),workspace=await this.read(organizationId),memberships=await this.listMemberships(organizationId),target=memberships.find((item)=>item.userId===input.userId)
     if(workspace.organization.stateVersion!==mutation.stateVersion)throw new CloudRepositoryError('remote','membership更新後のstate versionが一致しません')
