@@ -6,9 +6,47 @@ test('loads the authoritative 73-task plan at Phase 0 with source traceability',
 
 test('phase, person, deadline and team views work without duplicating tasks',async({page})=>{const problems=await boot(page);await page.getByRole('tab',{name:/全体/}).click();await page.getByLabel('担当者フィルタ').getByRole('button',{name:/スン/}).click();await expect(page.locator('[data-task-id="P5-01"]')).toBeVisible();expect(await page.locator('[data-task-id^="P"]').count()).toBe(6);await page.getByLabel('担当者フィルタ').getByRole('button',{name:/スン/}).click();await page.getByRole('button',{name:'期限超過'}).click();await expect(page.locator('[data-task-id="P0-01"]')).toBeVisible();await page.getByRole('button',{name:'チーム別表示'}).click();await expect(page.getByRole('heading',{name:'キャスティング・渉外チーム'})).toBeVisible();expect(problems).toEqual([])})
 
-test('status and required hold reason persist across reload',async({page})=>{const problems=await boot(page);await page.locator('#status-card-P0-01').selectOption('進行中');await expect(page.getByRole('status')).toContainText('進行中');page.once('dialog',async(dialog)=>{expect(dialog.type()).toBe('prompt');await dialog.accept('外部回答待ち')});await page.locator('#status-card-P0-01').selectOption('保留');await page.reload();expect(await page.evaluate(()=>{const value=JSON.parse(localStorage.getItem('nexus.bundle.v4')!);const task=value.tasks.find((item:{id:string})=>item.id==='P0-01');return{status:task.status,holdReason:task.holdReason}})).toEqual({status:'保留',holdReason:'外部回答待ち'});expect(problems).toEqual([])})
+test('status and required hold reason persist across reload',async({page})=>{const problems=await boot(page);await page.locator('#status-card-P0-01').selectOption('進行中');await expect(page.getByRole('status')).toContainText('進行中');await page.locator('#status-card-P0-01').selectOption('保留');await page.getByLabel('保留理由').fill('外部回答待ち');await page.getByRole('button',{name:'理由と状態を保存'}).click();await expect(page.getByRole('status')).toContainText('保留');await page.reload();expect(await page.evaluate(()=>{const value=JSON.parse(localStorage.getItem('nexus.bundle.v4')!);const task=value.tasks.find((item:{id:string})=>item.id==='P0-01');return{status:task.status,holdReason:task.holdReason}})).toEqual({status:'保留',holdReason:'外部回答待ち'});expect(problems).toEqual([])})
 
-test('CRUD preserves canonical fields and audits custom deletion',async({page})=>{const problems=await boot(page);await page.getByRole('button',{name:'新規タスク'}).click();await page.getByLabel('タスク名 *').fill('E2E追加タスク');await page.getByLabel('担当者（読点区切り）').fill('鈴木、浜名');await page.getByRole('button',{name:'保存する'}).click();await page.getByRole('tab',{name:/全体/}).click();await expect(page.getByRole('heading',{name:'E2E追加タスク'})).toBeVisible();await page.getByRole('button',{name:'E2E追加タスクを編集'}).click();await page.getByLabel('タスク名 *').fill('E2E編集済み');await page.getByRole('button',{name:'保存する'}).click();page.once('dialog',(dialog)=>dialog.accept());await page.getByRole('button',{name:'E2E編集済みを削除'}).click();await page.reload();const result=await page.evaluate(()=>{const value=JSON.parse(localStorage.getItem('nexus.bundle.v4')!);return{exists:value.tasks.some((task:{title:string})=>task.title==='E2E編集済み'),deleteAudit:value.audit.some((item:{issueId:string})=>item.issueId==='OP-TASK-DELETE')}});expect(result).toEqual({exists:false,deleteAudit:true});expect(problems).toEqual([])})
+test('CRUD preserves canonical fields and audits custom deletion',async({page})=>{const problems=await boot(page);await page.getByRole('button',{name:'新規タスク'}).click();await page.getByLabel('タスク名 *').fill('E2E追加タスク');await page.getByLabel('担当者（読点区切り）').fill('鈴木、浜名');await page.getByRole('button',{name:'保存する'}).click();await page.getByRole('tab',{name:/全体/}).click();const created=page.locator('[data-task-id]').filter({hasText:'E2E追加タスク'}),taskId=await created.getAttribute('data-task-id');expect(taskId).toBeTruthy();const card=page.locator(`[data-task-id="${taskId}"]`);await card.getByRole('button',{name:'タスク名を直接編集'}).click();await card.getByLabel('タスク名').fill('E2E編集済み');await card.getByRole('button',{name:'変更を保存'}).click();const restoredTrigger=card.getByRole('button',{name:'タスク名を直接編集'});await expect(restoredTrigger).toHaveText('E2E編集済み');await expect(restoredTrigger).toBeFocused();page.once('dialog',(dialog)=>dialog.accept());await page.getByRole('button',{name:'E2E編集済みを削除'}).click();await page.reload();const result=await page.evaluate(()=>{const value=JSON.parse(localStorage.getItem('nexus.bundle.v4')!);return{exists:value.tasks.some((task:{title:string})=>task.title==='E2E編集済み'),deleteAudit:value.audit.some((item:{issueId:string})=>item.issueId==='OP-TASK-DELETE')}});expect(result).toEqual({exists:false,deleteAudit:true});expect(problems).toEqual([])})
+
+test('filtered inline saves move focus to search, announce exclusion and keep Tab order',async({page})=>{
+  const problems=await boot(page)
+  await page.getByRole('button',{name:'新規タスク'}).click()
+  await page.getByLabel('タスク名 *').fill('FILTER-UNIQUE-ALPHA')
+  await page.getByRole('button',{name:'保存する'}).click()
+  await page.getByRole('tab',{name:/全体/}).click()
+  const search=page.locator('#task-search')
+  await search.fill('FILTER-UNIQUE-ALPHA')
+  const created=page.locator('[data-task-id]').filter({hasText:'FILTER-UNIQUE-ALPHA'})
+  await expect(created).toHaveCount(1)
+  const taskId=await created.getAttribute('data-task-id')
+  expect(taskId).toBeTruthy()
+  let card=page.locator(`[data-task-id="${taskId}"]`)
+  await card.getByRole('button',{name:'タスク名を直接編集'}).click()
+  const title=card.getByLabel('タスク名')
+  await title.fill('FILTER-RENAMED-BETA')
+  await title.press('Control+Enter')
+  await expect(card).toHaveCount(0)
+  await expect(search).toBeFocused()
+  await expect(page.locator('.inline-filter-notice')).toContainText('現在の絞り込み条件に一致しなくなりました')
+  await page.keyboard.press('Tab')
+  await expect(page.getByLabel('チームで絞り込み')).toBeFocused()
+  await search.fill('')
+  const teamFilter=page.getByLabel('チームで絞り込み')
+  await teamFilter.selectOption('planning')
+  card=page.locator(`[data-task-id="${taskId}"]`)
+  await card.getByRole('button',{name:'担当チームを直接編集'}).click()
+  const team=card.getByLabel('担当チーム'),nextTeam=await team.locator('option').evaluateAll((options)=>options.map((option)=>(option as HTMLOptionElement).value).find((value)=>value!=='planning')!)
+  await team.selectOption(nextTeam)
+  await team.press('Control+Enter')
+  await expect(card).toHaveCount(0)
+  await expect(search).toBeFocused()
+  await expect(page.locator('.inline-filter-notice')).toContainText('現在の絞り込み条件に一致しなくなりました')
+  await page.keyboard.press('Tab')
+  await expect(teamFilter).toBeFocused()
+  expect(problems).toEqual([])
+})
 
 test('validated JSON import is audited and malicious import remains atomic',async({page})=>{const problems=await boot(page);await page.locator('#status-card-P0-01').selectOption('進行中');const valid=await page.evaluate(()=>localStorage.getItem('nexus.bundle.v4')!);await page.locator('#json-import').setInputFiles({name:'valid.json',mimeType:'application/json',buffer:Buffer.from(valid)});await expect(page.getByRole('status')).toContainText('データを読み込みました');expect(await page.evaluate(()=>JSON.parse(localStorage.getItem('nexus.bundle.v4')!).audit.some((item:{issueId:string})=>item.issueId==='OP-JSON-IMPORT'))).toBe(true);const before=await page.evaluate(()=>localStorage.getItem('nexus.bundle.v4'));const bad=JSON.parse(valid);bad.tasks[0].sourceRefs=[];await page.locator('#json-import').setInputFiles({name:'bad.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(bad))});await expect(page.getByRole('alert')).toContainText('sourceRefs');expect(await page.evaluate(()=>localStorage.getItem('nexus.bundle.v4'))).toBe(before);expect(problems).toEqual([])})
 
@@ -16,7 +54,7 @@ test('migrates v2 custom data once without mixing it into the authoritative 73',
 
 test('KPI actuals and biweekly baseline/report persist with audit entries',async({page})=>{const problems=await boot(page);await page.getByLabel('同時接続の実績').fill('1234');await page.getByRole('button',{name:'KPI保存'}).click();await page.getByRole('button',{name:'隔週報告'}).first().click();await page.getByRole('button',{name:/現在を比較基準に保存/}).click();await page.getByRole('button',{name:'進行表'}).first().click();await page.locator('#status-card-P0-01').selectOption('進行中');await page.getByRole('button',{name:'隔週報告'}).first().click();await expect(page.getByLabel('LINE貼付用テキスト')).toHaveValue(/P0-01.*状態 未着手→進行中/);await page.reload();const result=await page.evaluate(()=>{const value=JSON.parse(localStorage.getItem('nexus.bundle.v4')!);return{actual:value.kpis.find((kpi:{id:string})=>kpi.id==='concurrent').actual,audits:['OP-KPI-SAVE','OP-REPORT-BASELINE'].every((id)=>value.audit.some((item:{issueId:string})=>item.issueId===id))}});expect(result).toEqual({actual:1234,audits:true});expect(problems).toEqual([])})
 
-test('canvas persistence, audit and mobile Phase 5 controls remain usable',async({page})=>{const problems=await boot(page);await page.getByRole('button',{name:'キャンバス'}).first().click();await page.getByLabel('接続元').selectOption('phase-0');await page.getByLabel('接続先').selectOption('phase-5');await page.getByRole('button',{name:'接続',exact:true}).click();await page.getByRole('button',{name:'保存',exact:true}).click();expect(await page.evaluate(()=>JSON.parse(localStorage.getItem('nexus.bundle.v4')!).audit.some((item:{issueId:string})=>item.issueId==='OP-CANVAS-SAVE'))).toBe(true);await page.setViewportSize({width:360,height:800});await page.getByRole('button',{name:'進行表'}).first().click();await page.getByRole('tab',{name:/Phase 5/}).click();await expect(page.locator('[data-task-id^="P5-"]')).toHaveCount(8);const heights=await page.locator('[data-task-id^="P5-"] .status-select').evaluateAll((items)=>items.map((item)=>item.getBoundingClientRect().height));expect(heights.every((height)=>height>=44)).toBe(true);expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true);expect(problems).toEqual([])})
+test('canvas persistence, audit and mobile Phase 5 controls remain usable',async({page})=>{const problems=await boot(page);await page.getByRole('button',{name:'キャンバス'}).first().click();await page.getByText('ドラッグを使わない接続と移動').click();await page.getByLabel('接続元').selectOption('phase-0');await page.getByLabel('接続先').selectOption('phase-5');await page.getByRole('button',{name:'接続',exact:true}).click();await page.getByRole('button',{name:'保存',exact:true}).click();expect(await page.evaluate(()=>JSON.parse(localStorage.getItem('nexus.bundle.v4')!).audit.some((item:{issueId:string})=>item.issueId==='OP-CANVAS-SAVE'))).toBe(true);await page.setViewportSize({width:360,height:800});await page.getByRole('button',{name:'進行表'}).first().click();await page.getByRole('tab',{name:/Phase 5/}).click();await expect(page.locator('[data-task-id^="P5-"]')).toHaveCount(8);const heights=await page.locator('[data-task-id^="P5-"] .status-select').evaluateAll((items)=>items.map((item)=>item.getBoundingClientRect().height));expect(heights.every((height)=>height>=44)).toBe(true);expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true);expect(problems).toEqual([])})
 
 test('weekly update freezes snapshot, updates managed truth once, then becomes a full no-op',async({page})=>{const problems=await boot(page),initialRun=await page.evaluate(()=>JSON.parse(localStorage.getItem('nexus.bundle.v4')!).weekly.lastRun);await page.locator('#status-card-P0-01').selectOption('完了');const beforeManual=await page.evaluate(()=>localStorage.getItem('nexus.bundle.v4'));await page.getByRole('button',{name:'今すぐ週次更新'}).click();const afterManaged=await page.evaluate(()=>localStorage.getItem('nexus.bundle.v4'));expect(afterManaged).not.toBe(beforeManual);await page.getByRole('button',{name:'今すぐ週次更新'}).click();expect(await page.evaluate(()=>localStorage.getItem('nexus.bundle.v4'))).toBe(afterManaged);await page.getByRole('button',{name:'キャンバス'}).first().click();let state=await page.evaluate(()=>{const value=JSON.parse(localStorage.getItem('nexus.bundle.v4')!);return{complete:value.flow.nodes.filter((node:{id:string})=>node.id==='weekly-complete:P0-01').length,summary:value.flow.nodes.filter((node:{id:string})=>node.id===`weekly-summary:${value.weekly.lastRun.runId}`).length,managed:String(value.flow.nodes.find((node:{id:string})=>node.id==='weekly-project:task:P0-01')?.data.label),run:value.weekly.lastRun,current:value.weekly.completions['P0-01'].currentStatus}});expect(state).toMatchObject({complete:1,summary:1,current:'完了'});expect(state.managed).toContain('成果未登録');expect(state.run).toEqual(initialRun);await page.getByRole('button',{name:'進行表'}).first().click();await page.locator('#status-card-P0-01').selectOption('進行中');await page.getByRole('button',{name:'今すぐ週次更新'}).click();const afterReopen=await page.evaluate(()=>localStorage.getItem('nexus.bundle.v4'));await page.getByRole('button',{name:'今すぐ週次更新'}).click();expect(await page.evaluate(()=>localStorage.getItem('nexus.bundle.v4'))).toBe(afterReopen);state=await page.evaluate(()=>{const value=JSON.parse(localStorage.getItem('nexus.bundle.v4')!);const node=value.flow.nodes.find((item:{id:string})=>item.id==='weekly-complete:P0-01');return{label:node.data.label,current:value.weekly.completions['P0-01'].currentStatus,run:value.weekly.lastRun}});expect(state.current).toBe('進行中');expect(state.run).toEqual(initialRun);expect(state.label).toContain('再オープン');expect(problems).toEqual([])})
 
@@ -24,7 +62,7 @@ test('automatic tasks can be deleted and tombstoned without touching authoritati
 
 test('dirty canvas blocks weekly and navigation until explicit discard or save',async({page})=>{const problems=await boot(page);await page.getByRole('button',{name:'キャンバス'}).first().click();const before=await page.evaluate(()=>localStorage.getItem('nexus.bundle.v4'));await page.getByRole('button',{name:'カード追加'}).click();await expect(page.getByText('未保存の変更があります')).toBeVisible();await expect(page.getByRole('button',{name:'進行表'}).first()).toBeDisabled();await page.getByRole('button',{name:'今すぐ週次更新'}).click();await expect(page.getByRole('alert')).toContainText('週次更新を停止');expect(await page.evaluate(()=>localStorage.getItem('nexus.bundle.v4'))).toBe(before);await page.getByRole('button',{name:'未保存変更を破棄'}).click();await expect(page.getByText('未保存の変更があります')).toHaveCount(0);await expect(page.getByText('新しいカード')).toHaveCount(0);await page.getByRole('button',{name:'カード追加'}).click();await page.getByRole('button',{name:'保存',exact:true}).click();await expect(page.getByText('未保存の変更があります')).toHaveCount(0);await page.getByRole('button',{name:'今すぐ週次更新'}).click();expect(await page.evaluate(()=>JSON.parse(localStorage.getItem('nexus.bundle.v4')!).flow.nodes.some((node:{id:string})=>node.id==='user-node:1'))).toBe(true);expect(problems).toEqual([])})
 
-test('task result sheet supports hash navigation, multiple HTTPS links and keyboard canvas fallback',async({page})=>{const problems=await boot(page);await page.getByRole('button',{name:/YUKISHIRO.*成果シート/}).click();await expect(page).toHaveURL(/#task-result\/P0-01$/);await page.getByRole('textbox',{name:/^結果/}).fill('成果確認済み');for(const [index,url] of ['https://example.com/one','https://example.com/two'].entries()){await page.getByRole('button',{name:'成果物を追加'}).click();const editors=page.locator('.deliverable-editor');await editors.nth(index).getByLabel('タイトル').fill(`成果${index+1}`);await editors.nth(index).getByLabel('HTTPS URL').fill(url)}await page.getByRole('button',{name:'保存',exact:true}).click();await expect(page.getByRole('link',{name:/URLを開く/})).toHaveCount(2);await page.reload();await expect(page.getByRole('heading',{name:'P0-01 成果シート'})).toBeVisible();await page.getByRole('button',{name:'進行表に戻る'}).click();await page.getByRole('button',{name:'キャンバス'}).first().click();await page.getByText('キャンバス一覧（キーボード・モバイル用）').click();await page.getByRole('button',{name:'P0-01 の成果シート'}).first().focus();await page.keyboard.press('Enter');await expect(page).toHaveURL(/#task-result\/P0-01$/);expect(problems).toEqual([])})
+test('task result sheet supports hash navigation, multiple HTTPS links and keyboard canvas fallback',async({page})=>{const problems=await boot(page);await page.getByRole('button',{name:/YUKISHIRO.*成果シート/}).click();await expect(page).toHaveURL(/#task-result\/P0-01$/);await page.getByRole('textbox',{name:/^結果/}).fill('成果確認済み');for(const [index,url] of ['https://example.com/one','https://example.com/two'].entries()){await page.getByRole('button',{name:'成果物を追加'}).click();const editors=page.locator('.deliverable-editor');await editors.nth(index).getByLabel('タイトル').fill(`成果${index+1}`);await editors.nth(index).getByLabel('HTTPS URL').fill(url)}const saveButton=page.getByRole('button',{name:'保存',exact:true});await saveButton.click();await expect(saveButton).toBeFocused();await expect(page.locator('.deliverable-editor')).toHaveCount(2);await page.reload();await expect(page.getByRole('heading',{name:'P0-01 成果シート'})).toBeVisible();await expect(page.locator('.deliverable-editor')).toHaveCount(2);await page.getByRole('button',{name:'進行表に戻る'}).click();await page.getByRole('button',{name:'キャンバス'}).first().click();await page.getByText('キャンバス一覧（キーボード・モバイル用）').click();await page.getByRole('button',{name:'P0-01 の成果シート'}).first().focus();await page.keyboard.press('Enter');await expect(page).toHaveURL(/#task-result\/P0-01$/);expect(problems).toEqual([])})
 
 test('milestone checklist gates completion, saves once, and preserves its parent status',async({page})=>{
   const problems=await boot(page)
@@ -32,16 +70,9 @@ test('milestone checklist gates completion, saves once, and preserves its parent
   const selected=await page.evaluate(()=>{const value=JSON.parse(localStorage.getItem('nexus.bundle.v4')!);const task=value.tasks.find((item:{provenance?:{ruleId?:string}})=>item.provenance?.ruleId==='milestone-checklist'),parent=value.tasks.find((item:{id:string})=>item.id===task.provenance.sourceTaskId);return{id:task.id,status:task.status,parentId:parent.id,parentStatus:parent.status}})
   const status=page.locator(`#status-card-${selected.id}`),card=page.locator(`[data-task-id="${selected.id}"]`)
   await status.selectOption('完了')
-  await expect(page.getByRole('alert')).toContainText('完了にできません')
+  await expect(page.locator('.toast.error')).toContainText('完了にできません')
   await expect(status).toHaveValue(selected.status)
-  await card.getByRole('button',{name:/編集/}).click()
-  let dialog=page.getByRole('dialog')
-  await dialog.getByLabel('状態').selectOption('完了')
-  await dialog.getByRole('button',{name:'保存する'}).click()
-  await expect(dialog.getByRole('alert')).toContainText('完了にできません')
-  await expect(dialog.getByLabel('状態')).toHaveValue('完了')
   expect(await page.evaluate(({id,parentId})=>{const value=JSON.parse(localStorage.getItem('nexus.bundle.v4')!);return{status:value.tasks.find((task:{id:string})=>task.id===id).status,parentStatus:value.tasks.find((task:{id:string})=>task.id===parentId).status}},selected)).toEqual({status:selected.status,parentStatus:selected.parentStatus})
-  await dialog.getByRole('button',{name:'変更を破棄'}).click()
   await card.locator('.card-actions button').filter({hasText:/^チェックリスト/}).click()
   await page.getByRole('button',{name:'テンプレートを使用'}).click()
   await expect(page.getByRole('progressbar')).toHaveAttribute('aria-valuetext','0/3 完了')
@@ -49,25 +80,20 @@ test('milestone checklist gates completion, saves once, and preserves its parent
   await page.reload()
   await expect(page.getByRole('heading',{name:new RegExp(`${selected.id} チェックリスト`)})).toBeVisible()
   expect(await page.evaluate((taskId)=>{const value=JSON.parse(localStorage.getItem('nexus.bundle.v4')!),results=value.taskResults.filter((result:{taskId:string})=>result.taskId===taskId);return{count:results.length,items:results[0].checklistItems.length,status:value.tasks.find((task:{id:string})=>task.id===taskId).status}},selected.id)).toEqual({count:1,items:3,status:selected.status})
-  await page.getByRole('button',{name:'編集'}).click()
   const editors=page.locator('.checklist-editor')
   for(let index=0;index<await editors.count();index++){
     const editor=editors.nth(index)
-    await editor.getByLabel('状態').selectOption('完了')
-    await editor.getByLabel('確認者').fill('E2E確認者')
-    await editor.getByLabel('確認日時').fill('2026-08-19T12:00')
-    await editor.getByLabel('証跡メモ').fill(`E2E証跡${index+1}`)
+    await editor.getByLabel('確認者',{exact:true}).fill('E2E確認者')
+    await editor.getByLabel('確認日時',{exact:true}).fill('2026-08-19T12:00')
+    await editor.getByLabel('証跡メモ',{exact:true}).fill(`E2E証跡${index+1}`)
+    await editor.locator('select').first().selectOption('完了')
   }
   await page.getByLabel('確認状態').selectOption('適合')
   await page.getByRole('button',{name:'保存',exact:true}).click()
   await page.getByRole('button',{name:'進行表に戻る'}).click()
   await page.getByRole('tab',{name:/全体/}).click()
-  await page.locator(`[data-task-id="${selected.id}"]`).getByRole('button',{name:/編集/}).click()
-  dialog=page.getByRole('dialog')
-  await dialog.getByLabel('状態').selectOption('完了')
-  await dialog.getByRole('button',{name:'保存する'}).click()
-  await expect(dialog).toHaveCount(0)
-  await expect(page.getByRole('status')).toContainText('タスクを保存しました')
+  await page.locator(`#status-card-${selected.id}`).selectOption('完了')
+  await expect(page.getByRole('status')).toContainText('完了')
   expect(await page.evaluate(({id,parentId})=>{const value=JSON.parse(localStorage.getItem('nexus.bundle.v4')!);return{status:value.tasks.find((task:{id:string})=>task.id===id).status,parentStatus:value.tasks.find((task:{id:string})=>task.id===parentId).status}},selected)).toEqual({status:'完了',parentStatus:selected.parentStatus})
   await page.setViewportSize({width:360,height:800})
   await page.locator(`[data-task-id="${selected.id}"]`).getByRole('button',{name:/チェックリスト 3\/3/}).click()
@@ -75,7 +101,7 @@ test('milestone checklist gates completion, saves once, and preserves its parent
   expect(problems).toEqual([])
 })
 
-test('clean visible canvas adopts managed result metadata after weekly update',async({page})=>{const problems=await boot(page);await page.locator('#status-card-P0-01').selectOption('完了');await page.getByRole('button',{name:/YUKISHIRO.*成果シート/}).click();await page.getByRole('textbox',{name:/^結果/}).fill('登録済み');await page.getByRole('button',{name:'保存',exact:true}).click();await page.getByRole('button',{name:'進行表に戻る'}).click();await page.getByRole('button',{name:'キャンバス'}).first().click();const managed=page.locator('[data-id="weekly-project:task:P0-01"]');await expect(managed).not.toContainText('成果登録あり');await page.getByRole('button',{name:'今すぐ週次更新'}).click();await expect(managed).toContainText('成果登録あり');expect(problems).toEqual([])})
+test('clean virtualized canvas adopts managed result metadata after weekly update',async({page})=>{const problems=await boot(page);await page.locator('#status-card-P0-01').selectOption('完了');await page.getByRole('button',{name:/YUKISHIRO.*成果シート/}).click();await page.getByRole('textbox',{name:/^結果/}).fill('登録済み');await page.getByRole('button',{name:'保存',exact:true}).click();await page.getByRole('button',{name:'進行表に戻る'}).click();await page.getByRole('button',{name:'キャンバス'}).first().click();const managedLabel=()=>page.evaluate(()=>{const value=JSON.parse(localStorage.getItem('nexus.bundle.v4')!);return String(value.flow.nodes.find((node:{id:string})=>node.id==='weekly-project:task:P0-01')?.data.label)});expect(await managedLabel()).not.toContain('成果登録あり');await page.getByRole('button',{name:'今すぐ週次更新'}).click();expect(await managedLabel()).toContain('成果登録あり');expect(problems).toEqual([])})
 
 test('hashchange navigation and 200 percent zoom remain usable without result overflow',async({page})=>{const problems=await boot(page);await page.evaluate(()=>{document.body.style.zoom='200%';location.hash='#task-result/P0-02'});await expect(page.getByRole('heading',{name:'P0-02 成果シート'})).toBeVisible();const back=page.getByRole('button',{name:'進行表に戻る'});await back.scrollIntoViewIfNeeded();await expect(back).toBeVisible();const metrics=await page.locator('.result-sheet').evaluate((sheet)=>{const rect=(sheet.querySelector('button') as HTMLElement).getBoundingClientRect();return{overflow:sheet.scrollWidth-sheet.clientWidth,buttonHeight:rect.height}});expect(metrics.overflow).toBeLessThanOrEqual(1);expect(metrics.buttonHeight).toBeGreaterThanOrEqual(44);await page.evaluate(()=>{location.hash=''});await expect(page.getByRole('heading',{name:'タスク進行表',exact:true})).toBeVisible();expect(problems).toEqual([])})
 
