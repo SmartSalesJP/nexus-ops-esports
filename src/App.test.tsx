@@ -1,5 +1,5 @@
 import { StrictMode } from 'react'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { expect, it, vi } from 'vitest'
 import { initialAudit, initialEdges, initialKpis, initialNodes, initialTasks, initialViewport } from './data'
@@ -27,6 +27,10 @@ it('labels current operation history truthfully without claiming a retest',async
   const entry=createOperationAuditEntry('OP-TEST','runtime','テスト操作','保存内容',['src/App.tsx'],'before','after','2026-08-14T20:50:00+09:00')
   expect(entry).toMatchObject({issueId:'OP-TEST',targetVersion:'0.4.0',round:3,retest:'未実施（操作時点）',action:'操作履歴 · テスト操作',at:'2026-08-14T20:50:00+09:00'})
   expect(entry.detail).toContain('監査指摘の修正ではない')
+})
+
+it('defaults to the derived quest overview and switches to the unchanged full task board without saving UI state',async()=>{
+  localStorage.clear();const source=runWeeklyBundle(bundle(),new Date(),'manual');vi.resetModules();const {default:App}=await import('./App'),write=vi.spyOn(Storage.prototype,'setItem');render(<App initialBundle={source}/>);const operations=screen.getByText('大会運用サマリー').closest('details')!;expect(operations).not.toHaveAttribute('open');const questTab=screen.getByRole('tab',{name:'実行順'});expect(questTab).toHaveAttribute('aria-selected','true');expect(screen.getByRole('heading',{name:'全担当者の次アクション'})).toBeVisible();questTab.focus();fireEvent.keyDown(questTab,{key:'ArrowRight'});await waitFor(()=>expect(screen.getByRole('tab',{name:'全タスク'})).toHaveFocus());expect(operations).toHaveAttribute('open');expect(screen.getByRole('button',{name:/今すぐ週次更新/})).toBeEnabled();expect(screen.getByRole('heading',{name:'タスク進行表'})).toBeVisible();fireEvent.click(screen.getByRole('tab',{name:'実行順'}));expect(screen.getByRole('heading',{name:'全担当者の次アクション'})).toBeVisible();expect(write).not.toHaveBeenCalled();expect(source.tasks.every((task)=>!Object.hasOwn(task,'questRank')&&!Object.hasOwn(task,'questBucket'))).toBe(true)
 })
 
 it('reconciles same-week rule deltas once on startup without changing the frozen run or canonical tasks',async()=>{
@@ -68,14 +72,14 @@ it('keeps the old bundle and React state when startup delta persistence fails',a
   vi.resetModules();const {default:App}=await import('./App');render(<StrictMode><App/></StrictMode>)
   await waitFor(()=>expect(screen.getByRole('alert')).toHaveTextContent('週次更新を保存できませんでした'))
   expect(localStorage.getItem(KEYS.bundle)).toBe(persisted)
-  expect(screen.getByText('全タスク').parentElement).toHaveTextContent('99')
+  expect(within(document.querySelector('.metric-grid')!).getByText('全タスク').parentElement).toHaveTextContent('99')
   expect(JSON.parse(localStorage.getItem(KEYS.weeklyFailure)!)).toMatchObject({runId:'weekly:2026-W34',error:expect.stringContaining('保存できません')})
   storageSpy.mockRestore();cleanup();vi.useRealTimers()
 })
 
 it('keeps a dirty result draft and accepted URL when a newer cloud bundle is rendered',async()=>{
   vi.resetModules();const {default:App}=await import('./App'),source=runWeeklyBundle(bundle(),new Date('2026-08-17T12:00:00+09:00'),'manual'),organization={id:'org-1',name:'Org',slug:'org',status:'active' as const,stateVersion:1,role:'editor' as const},workspace={organization,entities:[],bundle:source,importState:{status:'imported' as const,manifestCount:1,lastManifestAt:'2026-08-17T00:00:00.000Z'}},cloud:CloudControls={repository:{} as CloudControls['repository'],workspace,organizations:[organization],selectedOrganizationId:organization.id,userEmail:'test@example.com',onSelectOrganization:vi.fn(),onConfirmed:vi.fn(),pendingCandidate:null,onPending:vi.fn(),onReload:vi.fn(),onSignOut:vi.fn(),onSessionExpired:vi.fn(),onAccessRevoked:vi.fn()},view=render(<App initialBundle={source} cloud={cloud}/>)
-  await userEvent.click(screen.getByRole('button',{name:/YUKISHIRO.*成果シート/}))
+  await userEvent.click(screen.getByRole('tab',{name:'全タスク'}));await userEvent.click(screen.getByRole('button',{name:/YUKISHIRO.*成果シート/}))
   const input=screen.getByRole('textbox',{name:/^結果/});await userEvent.type(input,'local draft')
   const accepted=location.hash,remote={...structuredClone(source),exportedAt:'2026-08-17T01:00:00.000Z'},remoteOrganization={...organization,stateVersion:2},remoteCloud={...cloud,workspace:{...workspace,organization:remoteOrganization,bundle:remote},organizations:[remoteOrganization]}
   view.rerender(<App initialBundle={remote} cloud={remoteCloud}/>)
@@ -113,15 +117,31 @@ it('releases the global mutation lock after failure so the operation can be retr
 })
 
 it('requests native reload confirmation while an inline task draft is dirty',async()=>{
-  localStorage.clear();const source=runWeeklyBundle(bundle(),new Date(),'manual');vi.resetModules();const {default:App}=await import('./App');render(<App initialBundle={source}/>);await waitFor(()=>expect(screen.getByRole('button',{name:/今すぐ週次更新/})).toBeEnabled());fireEvent.click(screen.getByText(initialTasks[0].title).closest('button')!);fireEvent.change(screen.getByLabelText('タスク名'),{target:{value:'未保存の直接編集'}});const event=new Event('beforeunload',{cancelable:true});expect(window.dispatchEvent(event)).toBe(false);expect(event.defaultPrevented).toBe(true)
+  localStorage.clear();const source=runWeeklyBundle(bundle(),new Date(),'manual');vi.resetModules();const {default:App}=await import('./App');render(<App initialBundle={source}/>);await waitFor(()=>expect(screen.getByRole('button',{name:/今すぐ週次更新/})).toBeEnabled());fireEvent.click(screen.getByRole('tab',{name:'全タスク'}));fireEvent.click(screen.getByText(initialTasks[0].title).closest('button')!);fireEvent.change(screen.getByLabelText('タスク名'),{target:{value:'未保存の直接編集'}});const event=new Event('beforeunload',{cancelable:true});expect(window.dispatchEvent(event)).toBe(false);expect(event.defaultPrevented).toBe(true)
 })
 
 it('blocks milestone completion until the checklist and overall verification are complete without changing the parent task',async()=>{
   vi.useFakeTimers({shouldAdvanceTime:true});vi.setSystemTime(new Date('2026-08-19T12:00:00+09:00'));localStorage.clear()
   try{
     const source=runWeeklyBundle(bundle(),new Date(),'manual'),milestone=source.tasks.find((task)=>task.provenance?.ruleId==='milestone-checklist')!,parent=source.tasks.find((task)=>task.id===milestone.provenance?.sourceTaskId)!,parentStatus=parent.status
-    vi.resetModules();const {default:App}=await import('./App');const invalid=render(<App initialBundle={source}/>);await waitFor(()=>expect(screen.getByRole('button',{name:/今すぐ週次更新/})).toBeEnabled());const persistedBefore=localStorage.getItem(KEYS.bundle);fireEvent.click(screen.getByRole('tab',{name:/全体/}));const select=document.getElementById(`status-card-${milestone.id}`)!;fireEvent.change(select,{target:{value:'完了'}});await waitFor(()=>expect(screen.getByRole('alert')).toHaveTextContent('完了にできません'));expect(select).toHaveValue(milestone.status);expect(screen.getAllByRole('button',{name:'不足項目を確認'}).length).toBeGreaterThan(0);expect(localStorage.getItem(KEYS.bundle)).toBe(persistedBefore);expect(source.tasks.find((task)=>task.id===milestone.id)?.status).toBe(milestone.status);expect(source.tasks.find((task)=>task.id===parent.id)?.status).toBe(parentStatus);invalid.unmount();localStorage.clear()
+    vi.resetModules();const {default:App}=await import('./App');const invalid=render(<App initialBundle={source}/>);await waitFor(()=>expect(screen.getByRole('button',{name:/今すぐ週次更新/})).toBeEnabled());const persistedBefore=localStorage.getItem(KEYS.bundle);fireEvent.click(screen.getByRole('tab',{name:'全タスク'}));fireEvent.click(screen.getByRole('tab',{name:/全体/}));const select=document.getElementById(`status-card-${milestone.id}`)!;fireEvent.change(select,{target:{value:'完了'}});await waitFor(()=>expect(screen.getByRole('alert')).toHaveTextContent('完了にできません'));expect(select).toHaveValue(milestone.status);expect(screen.getAllByRole('button',{name:'不足項目を確認'}).length).toBeGreaterThan(0);expect(localStorage.getItem(KEYS.bundle)).toBe(persistedBefore);expect(source.tasks.find((task)=>task.id===milestone.id)?.status).toBe(milestone.status);expect(source.tasks.find((task)=>task.id===parent.id)?.status).toBe(parentStatus);invalid.unmount();localStorage.clear()
     const completedItems=checklistTemplate(milestone,parent).map((item)=>({...item,status:'完了' as const,reviewer:'監査担当',reviewedAt:'2026-08-19T03:00:00.000Z',evidenceMemo:'証跡を確認済み'})),valid={...source,taskResults:[...(source.taskResults??[]),{id:`task-result:${milestone.id}` as const,taskId:milestone.id,resultBody:'',verificationState:'適合' as const,verificationSummary:'確認済み',deliverables:[],checklistItems:completedItems,nextStep:'',completionCriteria:'',verificationMemo:'',updatedAt:'2026-08-19T03:00:00.000Z'}]}
-    expect(validateBundle(valid)).toEqual([]);cleanup();vi.resetModules();const {default:ValidApp}=await import('./App');render(<ValidApp initialBundle={valid}/>);await waitFor(()=>expect(screen.getByRole('button',{name:/今すぐ週次更新/})).toBeEnabled());fireEvent.click(screen.getByRole('tab',{name:/全体/}));const validSelect=document.getElementById(`status-card-${milestone.id}`)!;fireEvent.change(validSelect,{target:{value:'完了'}});await waitFor(()=>expect((JSON.parse(localStorage.getItem(KEYS.bundle)!) as ExportBundle).tasks.find((task)=>task.id===milestone.id)?.status).toBe('完了'));expect((JSON.parse(localStorage.getItem(KEYS.bundle)!) as ExportBundle).tasks.find((task)=>task.id===parent.id)?.status).toBe(parentStatus)
+    expect(validateBundle(valid)).toEqual([]);cleanup();vi.resetModules();const {default:ValidApp}=await import('./App');render(<ValidApp initialBundle={valid}/>);await waitFor(()=>expect(screen.getByRole('button',{name:/今すぐ週次更新/})).toBeEnabled());fireEvent.click(screen.getByRole('tab',{name:'全タスク'}));fireEvent.click(screen.getByRole('tab',{name:/全体/}));const validSelect=document.getElementById(`status-card-${milestone.id}`)!;fireEvent.change(validSelect,{target:{value:'完了'}});await waitFor(()=>expect((JSON.parse(localStorage.getItem(KEYS.bundle)!) as ExportBundle).tasks.find((task)=>task.id===milestone.id)?.status).toBe('完了'));expect((JSON.parse(localStorage.getItem(KEYS.bundle)!) as ExportBundle).tasks.find((task)=>task.id===parent.id)?.status).toBe(parentStatus)
+  }finally{cleanup();vi.useRealTimers()}
+})
+
+it('restores the integrated quest select after a real completion gate or storage save failure',async()=>{
+  vi.useFakeTimers({shouldAdvanceTime:true});vi.setSystemTime(new Date('2026-08-24T12:00:00+09:00'));localStorage.clear()
+  try{
+    const source=runWeeklyBundle(bundle(),new Date(),'manual'),milestone=source.tasks.find((task)=>task.provenance?.ruleId==='milestone-checklist')!
+    expect(milestone.id).toBe('AUTO-2026-W35-02')
+    vi.resetModules();const {default:App}=await import('./App');render(<App initialBundle={source}/>);await waitFor(()=>expect(screen.getByRole('button',{name:/今すぐ週次更新/})).toBeEnabled())
+    const assignee=milestone.personKeys[0];fireEvent.click(screen.getByRole('button',{name:assignee?`${assignee}さんの実行順を開く`:'未割当の実行順を開く'}))
+    const selectId=`quest-status-${milestone.id}`
+    for(let attempt=0;attempt<10&&!document.getElementById(selectId);attempt++){const more=screen.queryByRole('button',{name:/次の\d+件を表示（残り\d+件）/});expect(more).toBeInTheDocument();fireEvent.click(more!)}
+    const select=document.getElementById(selectId)!;expect(select).toBeInstanceOf(HTMLSelectElement);select.focus();fireEvent.change(select,{target:{value:'完了'}})
+    await waitFor(()=>expect(screen.getAllByRole('alert').some((alert)=>alert.textContent?.includes('完了にできません'))).toBe(true));await waitFor(()=>expect(select).toBeEnabled());await waitFor(()=>expect(select).toHaveFocus());expect(select).toHaveValue(milestone.status);expect(source.tasks.find((task)=>task.id===milestone.id)?.status).toBe(milestone.status)
+    const original=Storage.prototype.setItem,write=vi.spyOn(Storage.prototype,'setItem').mockImplementation(function(this:Storage,key:string,value:string){if(key===KEYS.bundle)throw new DOMException('quota','QuotaExceededError');return original.call(this,key,value)})
+    fireEvent.change(select,{target:{value:'進行中'}});await waitFor(()=>expect(screen.getAllByRole('alert').some((alert)=>alert.textContent?.includes('保存'))).toBe(true));await waitFor(()=>expect(select).toBeEnabled());await waitFor(()=>expect(select).toHaveFocus());expect(select).toHaveValue(milestone.status);write.mockRestore()
   }finally{cleanup();vi.useRealTimers()}
 })

@@ -1,6 +1,73 @@
 import { expect, test, type Page } from '@playwright/test'
 
-const boot=async(page:Page,{reducedMotion=false}:{reducedMotion?:boolean}={})=>{const problems:string[]=[];page.on('console',(message)=>{if(['error','warning'].includes(message.type()))problems.push(message.text())});if(reducedMotion)await page.emulateMedia({reducedMotion:'reduce'});await page.goto('/');await page.evaluate(()=>localStorage.clear());await page.reload();return problems}
+const boot=async(page:Page,{reducedMotion=false,quest=false}:{reducedMotion?:boolean;quest?:boolean}={})=>{const problems:string[]=[];page.on('console',(message)=>{if(['error','warning'].includes(message.type()))problems.push(message.text())});if(reducedMotion)await page.emulateMedia({reducedMotion:'reduce'});await page.goto('/');await page.evaluate(()=>localStorage.clear());await page.reload();if(!quest)await page.getByRole('tab',{name:'全タスク'}).click();return problems}
+
+const mountQuestFixture=async(page:Page,readOnly=false)=>{await page.goto('/e2e/fixtures/quest.html');await page.evaluate(async(viewer)=>{const reactPath='/node_modules/.vite/deps/react.js',clientPath='/node_modules/.vite/deps/react-dom_client.js',questPath='/src/components/QuestBoard.tsx',dataPath='/src/data.ts',React=(await import(reactPath)).default,{createRoot}=(await import(clientPath)).default,{QuestBoard}=await import(questPath),{initialTasks}=await import(dataPath),base=structuredClone(initialTasks[0]),make=(id:string,changes:Record<string,unknown>={})=>({...structuredClone(base),id,title:`${id}の業務`,owner:'責任者',rawAssignees:'鈴木',assignees:['鈴木'],personKeys:['鈴木'],urgency:'中',deadline:'未定',deadlineDate:undefined,status:'未着手',holdReason:'',dependencies:[],notes:[],updatedAt:'2026-08-24T00:00:00.000Z',...changes}),source=[make('A',{urgency:'高',status:'進行中',deadlineDate:'2026-08-24'}),make('B',{urgency:'高',deadlineDate:'2026-08-24',dependencies:['A']}),make('C',{deadlineDate:'2026-08-25'}),make('GATE',{urgency:'低'}),make('HOLD',{status:'保留',holdReason:'承認待ち'}),make('MISSING',{dependencies:['NO-SUCH-TASK']}),make('CYCLE-A',{dependencies:['CYCLE-B']}),make('CYCLE-B',{dependencies:['CYCLE-A']}),make('SHARED',{rawAssignees:'鈴木、ユウタ',assignees:['鈴木','ユウタ'],personKeys:['鈴木','ユウタ']}),make('DYNAMIC',{rawAssignees:'学生スタッフ（当日）',assignees:['学生スタッフ（当日）'],personKeys:[]}),make('UNASSIGNED',{rawAssignees:'',assignees:[],personKeys:[]})];document.documentElement.dataset.questWrites='0';function Fixture(){const [tasks,setTasks]=React.useState(source),[renderCount,setRenderCount]=React.useState(0);return React.createElement(React.Fragment,null,React.createElement('button',{type:'button',onClick:()=>setRenderCount((value:number)=>value+1)},`無関係な再描画 ${renderCount}`),React.createElement(QuestBoard,{tasks,readOnly:viewer,onStatus:async(id:string,status:string,holdReason?:string)=>{document.documentElement.dataset.questWrites=String(Number(document.documentElement.dataset.questWrites)+1);if(id==='GATE'&&status==='完了')return{ok:false,issues:['完了ゲートで拒否しました']};setTasks((current:Array<Record<string,unknown>>)=>current.map((item)=>item.id===id?{...item,status,holdReason:status==='保留'?holdReason??'':item.holdReason,updatedAt:'2026-08-24T01:00:00.000Z'}:item));return{ok:true}}}))}createRoot(document.getElementById('quest-fixture')!).render(React.createElement(Fixture))},readOnly);await expect(page.getByRole('heading',{name:'全担当者の次アクション'})).toBeVisible()}
+
+test('quest overview, detail, derived persistence boundary and 320–390px layout remain stable',async({page})=>{
+  await page.clock.setFixedTime(new Date('2026-08-24T12:00:00+09:00'))
+  const problems=await boot(page,{quest:true})
+  await expect(page.getByRole('heading',{name:'全担当者の次アクション'})).toBeVisible()
+  expect(await page.locator('.quest-person-card header p').first().evaluate((element)=>Number.parseFloat(getComputedStyle(element).fontSize))).toBeGreaterThanOrEqual(11)
+  await expect.poll(()=>page.evaluate(()=>JSON.parse(localStorage.getItem('nexus.bundle.v4')!).weekly.lastRun?.runId)).toBeTruthy()
+  const compactTop=await page.getByRole('heading',{name:'全担当者の次アクション'}).evaluate((element)=>element.getBoundingClientRect().top)
+  expect(compactTop).toBeLessThan(800)
+  await page.getByText('大会運用サマリー').click()
+  const expandedTop=await page.getByRole('heading',{name:'全担当者の次アクション'}).evaluate((element)=>element.getBoundingClientRect().top)
+  expect(expandedTop-compactTop).toBeGreaterThan(500)
+  await page.getByText('大会運用サマリー').click()
+  const storedBefore=await page.evaluate(()=>localStorage.getItem('nexus.bundle.v4'))
+  await page.getByRole('button',{name:'鈴木さんの実行順を開く'}).click()
+  await expect(page.getByRole('heading',{name:'鈴木さんの実行順'})).toBeVisible()
+  await expect(page.locator('[data-quest-now="true"]')).toHaveCount(1)
+  const first=await page.locator('[data-quest-now="true"]').getAttribute('data-task-id')
+  await page.reload()
+  await page.getByRole('button',{name:'鈴木さんの実行順を開く'}).click()
+  await expect(page.locator('[data-quest-now="true"]')).toHaveAttribute('data-task-id',first!)
+  const initialDetailHeight=await page.evaluate(()=>document.documentElement.scrollHeight),loadMore=page.getByRole('button',{name:/次の\d+件を表示（残り\d+件）/});await expect(loadMore).toBeVisible();await loadMore.click();expect(await page.evaluate(()=>document.documentElement.scrollHeight)).toBeGreaterThan(initialDetailHeight+500)
+  await page.getByRole('button',{name:'全担当者へ戻る'}).click();await page.getByRole('tab',{name:'全タスク'}).click();await page.locator('#task-search').fill('一致しないフィルタ');await page.getByRole('tab',{name:'実行順'}).click();await page.getByRole('button',{name:'鈴木さんの実行順を開く'}).click();await expect(page.locator('[data-quest-now="true"]')).toHaveAttribute('data-task-id',first!)
+  const boundary=await page.evaluate(()=>{const bundle=JSON.parse(localStorage.getItem('nexus.bundle.v4')!);return{same:localStorage.getItem('nexus.bundle.v4'),hasDerived:bundle.tasks.some((task:Record<string,unknown>)=>['questRank','questBucket','questAssignee','questMode'].some((key)=>key in task)),authoritative:bundle.tasks.filter((task:{id:string})=>/^P[0-6]-\d{2}$/.test(task.id)).length}})
+  expect(boundary).toEqual({same:storedBefore,hasDerived:false,authoritative:73})
+  for(const width of [320,360,390]){
+    await page.setViewportSize({width,height:800})
+    const metrics=await page.evaluate(()=>({overflow:document.documentElement.scrollWidth-window.innerWidth,targets:[...document.querySelectorAll<HTMLButtonElement>('button,select')].filter((element)=>element.offsetParent!==null).map((element)=>element.getBoundingClientRect().height)}))
+    expect(metrics.overflow).toBeLessThanOrEqual(1)
+    expect(metrics.targets.every((height)=>height>=44)).toBe(true)
+  }
+  await page.setViewportSize({width:1280,height:800});await page.evaluate(()=>{document.body.style.zoom='200%'});expect(await page.locator('.quest-board').evaluate((element)=>element.scrollWidth-element.clientWidth)).toBeLessThanOrEqual(1)
+  expect(problems).toEqual([])
+})
+
+test('quest fixture covers dependency promotion, hold, cycles, missing dependencies, shared and failed status focus',async({page})=>{
+  await page.clock.setFixedTime(new Date('2026-08-24T12:00:00+09:00'));await mountQuestFixture(page)
+  await expect(page.getByRole('button',{name:'学生スタッフさんの実行順を開く'})).toBeVisible();await expect(page.getByRole('button',{name:'未割当の実行順を開く'})).toBeVisible()
+  await page.getByRole('button',{name:'ユウタさんの実行順を開く'}).click();await expect(page.getByRole('article',{name:'SHAREDの業務'})).toBeVisible();await page.getByRole('button',{name:'全担当者へ戻る'}).click()
+  await page.getByRole('button',{name:'鈴木さんの実行順を開く'}).click();await expect(page.getByText(/欠落依存 NO-SUCH-TASK/)).toBeVisible();await expect(page.getByText(/循環依存: CYCLE-A → CYCLE-B → CYCLE-A/).first()).toBeVisible()
+  await page.getByRole('combobox',{name:'Aの業務の状態',exact:true}).selectOption('完了');await expect(page.locator('[data-quest-now="true"]')).toHaveAttribute('data-task-id','B');await expect(page.locator('[data-quest-now="true"]')).toBeFocused();await expect(page.getByRole('status')).toHaveText('Aを「完了」に変更しました。次の「今やる」はBです。')
+  await page.getByRole('combobox',{name:'Bの業務の状態',exact:true}).selectOption('保留');await page.getByLabel('保留理由 / 解除条件').fill('外部承認待ち');await page.getByRole('button',{name:'理由と状態を保存'}).click();await expect(page.locator('[data-quest-now="true"]')).toHaveAttribute('data-task-id','C');await expect(page.locator('[data-quest-now="true"]')).toBeFocused();await expect(page.getByRole('status')).toHaveText('Bを「保留」に変更しました。次の「今やる」はCです。')
+  const cStatus=page.getByRole('combobox',{name:'Cの業務の状態',exact:true});await cStatus.selectOption('進行中');await expect(page.getByRole('article',{name:'Cの業務',exact:true})).toBeFocused();await cStatus.selectOption('未着手');await expect(page.getByRole('article',{name:'Cの業務',exact:true})).toBeFocused()
+  const sharedStatus=page.getByRole('combobox',{name:'SHAREDの業務の状態',exact:true});await sharedStatus.selectOption('進行中');await expect(page.getByRole('article',{name:'SHAREDの業務',exact:true})).toBeFocused();await sharedStatus.selectOption('未着手');await expect(page.getByRole('article',{name:'SHAREDの業務',exact:true})).toBeFocused()
+  await page.getByRole('combobox',{name:'HOLDの業務の状態',exact:true}).selectOption('未着手');await expect(page.getByRole('article',{name:'HOLDの業務',exact:true})).toBeFocused()
+  const gate=page.getByRole('combobox',{name:'GATEの業務の状態',exact:true});await gate.focus();await gate.selectOption('完了');await expect(page.getByRole('alert')).toContainText('完了ゲートで拒否しました');await expect(gate).toBeFocused();await expect(gate).toHaveValue('未着手')
+})
+
+test('quest viewer fixture exposes no write control and performs zero writes',async({page})=>{await mountQuestFixture(page,true);await page.getByRole('button',{name:'鈴木さんの実行順を開く'}).click();await expect(page.getByRole('combobox')).toHaveCount(0);await expect(page.getByText('状態 進行中')).toBeVisible();expect(await page.evaluate(()=>document.documentElement.dataset.questWrites)).toBe('0')})
+
+test('quest deadline refreshes just after JST midnight without a write',async({page})=>{await page.clock.install({time:new Date('2026-08-24T14:59:59.000Z')});await mountQuestFixture(page);await page.getByRole('button',{name:'鈴木さんの実行順を開く'}).click();const now=page.getByRole('region',{name:'今やる'});await expect(now.getByText('本日期限')).toBeVisible();await page.clock.fastForward(1_100);await expect(now.getByText('1日超過')).toBeVisible();expect(await page.evaluate(()=>document.documentElement.dataset.questWrites)).toBe('0')})
+
+test('quest consumes focus and live once across unrelated, visibility and JST midnight rerenders',async({page})=>{await page.clock.install({time:new Date('2026-08-24T14:59:59.000Z')});await mountQuestFixture(page);await page.getByRole('button',{name:'鈴木さんの実行順を開く'}).click();await page.getByRole('combobox',{name:'Aの業務の状態',exact:true}).selectOption('完了');await expect(page.locator('[data-quest-now="true"]')).toBeFocused();await page.evaluate(()=>{const live=document.querySelector('[role="status"][aria-live="polite"]')!;document.documentElement.dataset.questLiveMutations='0';new MutationObserver((records)=>{document.documentElement.dataset.questLiveMutations=String(Number(document.documentElement.dataset.questLiveMutations)+records.length)}).observe(live,{childList:true,characterData:true,subtree:true})});const unrelated=page.getByRole('button',{name:/無関係な再描画/});await unrelated.click();await expect(unrelated).toBeFocused();await page.evaluate(()=>document.dispatchEvent(new Event('visibilitychange')));await page.clock.fastForward(1_100);await expect(unrelated).toBeFocused();expect(await page.evaluate(()=>document.documentElement.dataset.questLiveMutations)).toBe('0')})
+
+test('integrated quest restores the real milestone select after completion gate and storage rejection',async({page})=>{
+  await page.clock.setFixedTime(new Date('2026-08-24T12:00:00+09:00'));const problems=await boot(page,{quest:true})
+  await expect.poll(()=>page.evaluate(()=>JSON.parse(localStorage.getItem('nexus.bundle.v4')!).weekly.lastRun?.runId)).toBe('weekly:2026-W35')
+  const milestone=await page.evaluate(()=>{const task=JSON.parse(localStorage.getItem('nexus.bundle.v4')!).tasks.find((item:{provenance?:{ruleId?:string}})=>item.provenance?.ruleId==='milestone-checklist');return{id:task.id,title:task.title,status:task.status,assignee:task.personKeys[0]??null}})
+  expect(milestone.id).toBe('AUTO-2026-W35-02');await page.getByRole('button',{name:milestone.assignee?`${milestone.assignee}さんの実行順を開く`:'未割当の実行順を開く'}).click()
+  const status=page.locator(`#quest-status-${milestone.id}`)
+  for(let attempt=0;attempt<10&&await status.count()===0;attempt++)await page.getByRole('button',{name:/次の\d+件を表示（残り\d+件）/}).click()
+  await expect(status).toBeVisible();await status.selectOption('完了');await expect(page.locator('.toast.error')).toContainText('完了にできません');await expect(status).toHaveValue(milestone.status);await expect(status).toBeEnabled();await expect(status).toBeFocused();await page.waitForTimeout(1_000);await expect(status).toBeFocused();const back=page.getByRole('button',{name:'全担当者へ戻る'});await back.focus();await page.evaluate(()=>document.dispatchEvent(new Event('visibilitychange')));await expect(back).toBeFocused()
+  await page.evaluate(()=>{const original=Storage.prototype.setItem;Storage.prototype.setItem=function(key:string,value:string){if(key==='nexus.bundle.v4')throw new DOMException('quota','QuotaExceededError');return original.call(this,key,value)}})
+  await status.selectOption('進行中');await expect(page.locator('.toast.error')).toContainText('保存');await expect(status).toHaveValue(milestone.status);await expect(status).toBeEnabled();await expect(status).toBeFocused();await page.waitForTimeout(1_000);await expect(status).toBeFocused();expect(problems).toEqual([])
+})
 
 test('loads the authoritative 73-task plan at Phase 0 with source traceability',async({page})=>{await page.clock.setFixedTime(new Date('2026-08-14T12:00:00+09:00'));const problems=await boot(page);expect(await page.locator('[data-task-id^="P"]').count()).toBeGreaterThan(0);expect(await page.evaluate(()=>JSON.parse(localStorage.getItem('nexus.bundle.v4')!).tasks.filter((task:{id:string})=>/^P[0-6]-\d{2}$/.test(task.id)).length)).toBe(73);await expect(page.getByRole('tab',{name:/Phase 0/})).toHaveAttribute('aria-selected','true');await expect(page.getByText(/S4:88-88/)).toBeVisible();await expect(page.getByText('旧期限超過 / 改訂期限まで4日')).toBeVisible();await expect(page.getByRole('button',{name:/YUKISHIRO.*削除/})).toBeDisabled();expect(problems).toEqual([])})
 
@@ -91,6 +158,7 @@ test('milestone checklist gates completion, saves once, and preserves its parent
   await page.getByLabel('確認状態').selectOption('適合')
   await page.getByRole('button',{name:'保存',exact:true}).click()
   await page.getByRole('button',{name:'進行表に戻る'}).click()
+  await page.getByRole('tab',{name:'全タスク'}).click()
   await page.getByRole('tab',{name:/全体/}).click()
   await page.locator(`#status-card-${selected.id}`).selectOption('完了')
   await expect(page.getByRole('status')).toContainText('完了')
