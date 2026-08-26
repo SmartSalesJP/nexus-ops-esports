@@ -1,5 +1,6 @@
 import type { Node } from '@xyflow/react'
-import type { AuditItem, AutoTaskProvenance, CompletionHistory, ExportBundle, FlowData, KpiValue, Task, TaskResultSheet, WeeklyRun, WeeklySnapshot, WeeklyState } from './types'
+import type { AuditItem, AutoTaskProvenance, CompletionHistory, ExportBundle, FlowData, KpiValue, Task, TaskResultSheet, WeeklyRun, WeeklySnapshot, WeeklyState, WorkspaceConfig } from './types'
+import { workspaceConfigFor } from './workspace'
 import { checklistProgress, isMilestoneChecklist } from './checklistTemplates'
 
 const DAY=86_400_000
@@ -61,10 +62,10 @@ export function normalizeAutoTask(task:Task){
 
 export function shouldCatchUp(weekly:WeeklyState,date:Date){return weeklySchedule(date).runId!==weekly.lastRun?.runId}
 
-const phaseSnapshot=(tasks:Task[])=>Object.fromEntries([0,1,2,3,4,5,6].map((phase)=>{const items=tasks.filter((task)=>task.phase===phase&&!task.automationDisabled),completed=items.filter((task)=>task.status==='完了').length;return [String(phase),{completed,total:items.length,rate:Math.round(completed/Math.max(items.length,1)*100)}]}))
-export function createWeeklySnapshot(tasks:Task[],kpis:KpiValue[]):WeeklySnapshot{
+const phaseSnapshot=(tasks:Task[],config?:WorkspaceConfig)=>Object.fromEntries(workspaceConfigFor(config).phases.map(({code})=>{const items=tasks.filter((task)=>task.phase===code&&!task.automationDisabled),completed=items.filter((task)=>task.status==='完了').length;return [String(code),{completed,total:items.length,rate:Math.round(completed/Math.max(items.length,1)*100)}]}))
+export function createWeeklySnapshot(tasks:Task[],kpis:KpiValue[],config?:WorkspaceConfig):WeeklySnapshot{
   const active=tasks.filter((task)=>!task.automationDisabled),completed=active.filter((task)=>task.status==='完了').length
-  return {completed,total:active.length,phaseProgress:phaseSnapshot(active),highUrgencyRemaining:active.filter((task)=>task.urgency==='高'&&task.status!=='完了').length,blockers:active.filter((task)=>task.status!=='完了'&&task.dependencies.some((id)=>tasks.find((candidate)=>candidate.id===id)?.status!=='完了')).length,kpis:structuredClone(kpis)}
+  return {completed,total:active.length,phaseProgress:phaseSnapshot(active,config),highUrgencyRemaining:active.filter((task)=>task.urgency==='高'&&task.status!=='完了').length,blockers:active.filter((task)=>task.status!=='完了'&&task.dependencies.some((id)=>tasks.find((candidate)=>candidate.id===id)?.status!=='完了')).length,kpis:structuredClone(kpis)}
 }
 
 const completionNode=(history:CompletionHistory,task:Task,position:{x:number;y:number}):Node=>({
@@ -76,15 +77,15 @@ const completionNode=(history:CompletionHistory,task:Task,position:{x:number;y:n
 const managedPosition=(flow:FlowData,index:number)=>{const user=flow.nodes.filter((node)=>!String(node.id).startsWith('weekly-')),maxX=user.length?Math.max(...user.map((node)=>node.position.x)):0,minY=user.length?Math.min(...user.map((node)=>node.position.y)):0;return{x:maxX+360+(index%2)*300,y:minY+Math.floor(index/2)*230}}
 
 const GRAPH_PREFIX='weekly-project:'
-function syncManagedProjectGraph(flow:FlowData,tasks:Task[],results:TaskResultSheet[]):FlowData{
+function syncManagedProjectGraph(flow:FlowData,tasks:Task[],results:TaskResultSheet[],config?:WorkspaceConfig):FlowData{
   const collision=flow.nodes.some((node)=>node.id.startsWith(GRAPH_PREFIX)&&(node.data as {managedBy?:unknown}).managedBy!=='weekly-project-graph')||flow.edges.some((edge)=>edge.id.startsWith(GRAPH_PREFIX)&&(edge.data as {managedBy?:unknown}|undefined)?.managedBy!=='weekly-project-graph')
   if(collision)throw new Error('予約済みweekly-project namespaceに手動要素があるため、週次graph更新を中止しました')
   const existing=new Map(flow.nodes.filter((node)=>node.id.startsWith(GRAPH_PREFIX)).map((node)=>[node.id,node])),resultByTask=new Map(results.map((result)=>[result.taskId,result]))
   const position=(id:string,fallback:{x:number;y:number})=>existing.get(id)?.position??fallback
   const managedData=(data:Record<string,unknown>)=>({managedBy:'weekly-project-graph',managedVersion:1,...data})
-  const nodes:Node[]=[{id:`${GRAPH_PREFIX}project`,position:position(`${GRAPH_PREFIX}project`,{x:80,y:80}),className:'weekly-project-node project',data:managedData({targetType:'project',targetId:'esports-project',label:'プロジェクト\n必要物 → 進行 → 完了後',ariaLabel:'週次プロジェクト。必要物、進行、完了後の順'})}]
+  const settings=workspaceConfigFor(config),nodes:Node[]=[{id:`${GRAPH_PREFIX}project`,position:position(`${GRAPH_PREFIX}project`,{x:80,y:80}),className:'weekly-project-node project',data:managedData({targetType:'project',targetId:'workspace-project',label:'プロジェクト\n必要物 → 進行 → 完了後',ariaLabel:'週次プロジェクト。必要物、進行、完了後の順'})}]
   const edges=flow.edges.filter((edge)=>!edge.id.startsWith(GRAPH_PREFIX))
-  for(const phase of [0,1,2,3,4,5,6] as const){const phaseTasks=tasks.filter((task)=>task.phase===phase).sort((a,b)=>a.id.localeCompare(b.id)),phaseId=`${GRAPH_PREFIX}phase:${phase}`;nodes.push({id:phaseId,position:position(phaseId,{x:420,y:80+phase*260}),className:'weekly-project-node phase',data:managedData({targetType:'phase',targetId:String(phase),label:`Phase ${phase}\n${phaseTasks.filter((task)=>task.status==='完了').length}/${phaseTasks.length} 完了`,ariaLabel:`Phase ${phase}。${phaseTasks.length}件中${phaseTasks.filter((task)=>task.status==='完了').length}件完了`})});edges.push({id:`${GRAPH_PREFIX}edge:project:phase:${phase}`,source:`${GRAPH_PREFIX}project`,target:phaseId,data:managedData({targetType:'phase',targetId:String(phase)})})
+  for(const {code:phase,name} of settings.phases){const phaseTasks=tasks.filter((task)=>task.phase===phase).sort((a,b)=>a.id.localeCompare(b.id)),phaseId=`${GRAPH_PREFIX}phase:${phase}`;nodes.push({id:phaseId,position:position(phaseId,{x:420,y:80+phase*260}),className:'weekly-project-node phase',data:managedData({targetType:'phase',targetId:String(phase),label:`${name}\n${phaseTasks.filter((task)=>task.status==='完了').length}/${phaseTasks.length} 完了`,ariaLabel:`${name}。${phaseTasks.length}件中${phaseTasks.filter((task)=>task.status==='完了').length}件完了`})});edges.push({id:`${GRAPH_PREFIX}edge:project:phase:${phase}`,source:`${GRAPH_PREFIX}project`,target:phaseId,data:managedData({targetType:'phase',targetId:String(phase)})})
     phaseTasks.forEach((task,index)=>{const id=`${GRAPH_PREFIX}task:${task.id}`,result=resultByTask.get(task.id),blocked=task.status!=='完了'&&task.dependencies.some((dependency)=>tasks.find((item)=>item.id===dependency)?.status!=='完了'),section=task.status==='完了'?'完了後':blocked?'必要物':'進行',checklist=checklistProgress(result?.checklistItems),resultText=isMilestoneChecklist(task)?result?.checklistItems?`チェックリスト ${checklist.completed}/${checklist.total}`:'チェックリスト未登録':result?`成果登録あり / ${result.verificationState} / deliverable ${result.deliverables.length}件`:'成果未登録';nodes.push({id,position:position(id,{x:760+(index%3)*300,y:80+phase*260+Math.floor(index/3)*150}),className:`weekly-project-node task section-${section}`,data:managedData({targetType:'task',targetId:task.id,taskId:task.id,taskIds:[task.id],section,label:`${section} | ${task.id}\n${task.title}\n${task.status} / ${resultText}`,ariaLabel:`${section}。${task.id} ${task.title}。${task.status}。${resultText}`})});edges.push({id:`${GRAPH_PREFIX}edge:phase:${phase}:task:${task.id}`,source:phaseId,target:id,data:managedData({targetType:'task',targetId:task.id,taskId:task.id})})})
   }
   return {...flow,nodes:[...flow.nodes.filter((node)=>!node.id.startsWith(GRAPH_PREFIX)),...nodes],edges}
@@ -106,7 +107,7 @@ const dueDays=(task:Task,scheduledFor:string)=>task.deadlineDate===undefined?nul
 const hasFollowup=(tasks:Task[],sourceId:string,pattern:RegExp)=>tasks.some((task)=>task.dependencies.includes(sourceId)&&pattern.test(task.title))
 const hasDeliverableFollowup=(tasks:Task[],sourceId:string)=>tasks.some((task)=>(task.dependencies.includes(sourceId)||task.provenance?.sourceTaskId===sourceId)&&/成果物|提出|受入確認|完了確認|レビュー/.test(task.title))
 
-function proposalsFor(tasks:Task[],kpis:KpiValue[],scheduledFor:string):Proposal[]{
+function proposalsFor(tasks:Task[],kpis:KpiValue[],scheduledFor:string,config?:WorkspaceConfig):Proposal[]{
   const base=tasks.filter((task)=>!task.createdByDepartment&&!task.automationDisabled&&task.status!=='完了'),out:Proposal[]=[]
   for(const task of base){
     const unmet=canonicalDependencies(task.dependencies.filter((id)=>tasks.find((candidate)=>candidate.id===id)?.status!=='完了'))
@@ -119,15 +120,15 @@ function proposalsFor(tasks:Task[],kpis:KpiValue[],scheduledFor:string):Proposal
   }
   for(const kpi of kpis.filter((item)=>item.actual===null||item.actual<item.target)){
     const missing=kpi.actual===null
-    out.push({ruleId:`kpi-${missing?'missing':'below-target'}`,dependencyIds:[],kpiId:kpi.id,reason:missing?`${kpi.label} の実績が未入力です。原因は断定せず、計測と入力を確認します。`:`${kpi.label} の実績が目標値未満です。原因は断定せず、分析と対策案を確認します。`,expectedDeliverable:missing?'計測根拠付きKPI実績値':'差分分析と承認前の対策案',rationaleCodes:[missing?'KPI_ACTUAL_MISSING':'KPI_BELOW_TARGET'],title:missing?`KPI「${kpi.label}」実績の計測・入力確認`:`KPI「${kpi.label}」差分分析・対策案作成`,phase:(base.map((task)=>task.phase).sort()[0]??0),teamId:'ops-hq',team:'運営本部',rawTeam:'運営本部',owner:'鈴木',assignees:[],rawAssignees:'',personKeys:[],urgency:missing?'中':'高',deadline:'次回週次更新まで',dependencies:[]})
+    const department=workspaceConfigFor(config).departments[0];out.push({ruleId:`kpi-${missing?'missing':'below-target'}`,dependencyIds:[],kpiId:kpi.id,reason:missing?`${kpi.label} の実績が未入力です。原因は断定せず、計測と入力を確認します。`:`${kpi.label} の実績が目標値未満です。原因は断定せず、分析と対策案を確認します。`,expectedDeliverable:missing?'計測根拠付きKPI実績値':'差分分析と承認前の対策案',rationaleCodes:[missing?'KPI_ACTUAL_MISSING':'KPI_BELOW_TARGET'],title:missing?`KPI「${kpi.label}」実績の計測・入力確認`:`KPI「${kpi.label}」差分分析・対策案作成`,phase:(base.map((task)=>task.phase).sort()[0]??0),teamId:department.id,team:department.name,rawTeam:department.name,owner:department.owner,assignees:[],rawAssignees:'',personKeys:[],urgency:missing?'中':'高',deadline:'次回週次更新まで',dependencies:[]})
   }
   return out
 }
 
-function autoTasks(tasks:Task[],kpis:KpiValue[],runId:string,scheduledFor:string,ranAt:string,tombstones:string[]){
+function autoTasks(tasks:Task[],kpis:KpiValue[],runId:string,scheduledFor:string,ranAt:string,tombstones:string[],config?:WorkspaceConfig){
   const known=new Set(tasks.map((task)=>task.fingerprint).filter(Boolean)),blocked=new Set(tombstones),created:Task[]=[],reasons:string[]=[]
   const weekId=runId.replace(/^weekly:/,''),used=tasks.map((task)=>new RegExp(`^AUTO-${weekId}-(\\d{2})$`).exec(task.id)).filter(Boolean).map((match)=>Number(match?.[1])),start=Math.max(0,...used)
-  proposalsFor(tasks,kpis,scheduledFor).forEach((proposal)=>{const provenance=canonicalProvenance(proposal),key=canonicalFingerprint(provenance);if(known.has(key)||blocked.has(key))return;const number=start+created.length+1,id=`AUTO-${weekId}-${pad(number)}`;created.push({id,title:proposal.title,phase:proposal.phase,teamId:proposal.teamId,team:proposal.team,rawTeam:proposal.rawTeam,owner:proposal.owner,assignees:proposal.assignees,rawAssignees:proposal.rawAssignees,personKeys:proposal.personKeys,urgency:proposal.urgency,deadline:proposal.deadline,deadlineDate:proposal.deadlineDate,status:'未着手',holdReason:'',dependencies:proposal.dependencies,notes:[],sourceRefs:[],updatedAt:ranAt,reason:proposal.reason,expectedDeliverable:proposal.expectedDeliverable,createdBy:'esports_progress_control',createdByDepartment:'esports_progress_control',createdRunId:runId,provenance,fingerprint:key,rationaleCodes:proposal.rationaleCodes,approvalState:'要確認',automationDisabled:false});known.add(key);reasons.push(proposal.reason)})
+  proposalsFor(tasks,kpis,scheduledFor,config).forEach((proposal)=>{const provenance=canonicalProvenance(proposal),key=canonicalFingerprint(provenance);if(known.has(key)||blocked.has(key))return;const number=start+created.length+1,id=`AUTO-${weekId}-${pad(number)}`;created.push({id,title:proposal.title,phase:proposal.phase,teamId:proposal.teamId,team:proposal.team,rawTeam:proposal.rawTeam,owner:proposal.owner,assignees:proposal.assignees,rawAssignees:proposal.rawAssignees,personKeys:proposal.personKeys,urgency:proposal.urgency,deadline:proposal.deadline,deadlineDate:proposal.deadlineDate,status:'未着手',holdReason:'',dependencies:proposal.dependencies,notes:[],sourceRefs:[],updatedAt:ranAt,reason:proposal.reason,expectedDeliverable:proposal.expectedDeliverable,createdBy:'esports_progress_control',createdByDepartment:'esports_progress_control',createdRunId:runId,provenance,fingerprint:key,rationaleCodes:proposal.rationaleCodes,approvalState:'要確認',automationDisabled:false});known.add(key);reasons.push(proposal.reason)})
   return {tasks:[...tasks,...created],created,reasons}
 }
 
@@ -135,21 +136,21 @@ const summaryNode=(run:WeeklyRun,position:{x:number;y:number}):Node=>({id:`weekl
 const missedWeeks=(last:WeeklyRun|null,scheduledFor:string)=>last?Math.max(0,Math.round((Date.parse(scheduledFor)-Date.parse(last.scheduledFor))/(7*DAY))-1):0
 const stableHash=(value:string)=>{let hash=2166136261;for(let index=0;index<value.length;index++){hash^=value.charCodeAt(index);hash=Math.imul(hash,16777619)}return(hash>>>0).toString(16).padStart(8,'0')}
 
-export function runWeeklyBundle(bundle:ExportBundle,date:Date,trigger:WeeklyRun['trigger']):ExportBundle{
-  const ranAt=date.toISOString(),schedule=weeklySchedule(date),existingRun=bundle.weekly.runs.find((item)=>item.runId===schedule.runId),generated=autoTasks(bundle.tasks,bundle.kpis,schedule.runId,schedule.scheduledFor,ranAt,bundle.weekly.tombstones)
+export function runWeeklyBundle(bundle:ExportBundle,date:Date,trigger:WeeklyRun['trigger'],config?:WorkspaceConfig):ExportBundle{
+  const ranAt=date.toISOString(),schedule=weeklySchedule(date),existingRun=bundle.weekly.runs.find((item)=>item.runId===schedule.runId),generated=autoTasks(bundle.tasks,bundle.kpis,schedule.runId,schedule.scheduledFor,ranAt,bundle.weekly.tombstones,config)
   let flow=bundle.flow,weekly={...bundle.weekly,completions:{...bundle.weekly.completions}},addedStickyCount=0
   generated.tasks.forEach((task)=>{const normalized=task.status==='完了'&&!weekly.completions[task.id]?{...task,updatedAt:task.updatedAt||ranAt}:task,result=syncTaskCompletion(flow,weekly,normalized,normalized.updatedAt,'inferred-from-updatedAt',ranAt);flow=result.flow;weekly=result.weekly;if(result.added)addedStickyCount++})
   if(existingRun){
-    flow=syncManagedProjectGraph(flow,generated.tasks,bundle.taskResults??[])
+    flow=syncManagedProjectGraph(flow,generated.tasks,bundle.taskResults??[],config)
     let audit=bundle.audit
     if(generated.created.length){const fingerprints=generated.created.map((task)=>task.fingerprint??task.id).sort(),auditItem:AuditItem={id:`weekly-audit:${existingRun.runId}:delta:${stableHash(fingerprints.join('|'))}`,issueId:'OP-WEEKLY-RUN-DELTA',classification:'persistence',targetVersion:'0.4.0',files:['src/weekly.ts','src/App.tsx'],before:'同一週の固定snapshot',after:`追加自動task ${generated.created.length}件`,evidence:['固定snapshotを変更せず差分だけをschema v4 bundleへ保存'],retest:'週次差分実行時の全量検証',residualRisk:'自動提案は要確認',round:4,at:ranAt,action:'操作履歴 · 週次進行差分',detail:`${existingRun.runId}。${generated.reasons.join(' / ')}`};audit=[auditItem,...audit.filter((item)=>item.id!==auditItem.id)]}
     const candidate={...bundle,tasks:generated.tasks,flow,weekly:{...weekly,lastRun:bundle.weekly.lastRun,runs:bundle.weekly.runs},audit}
     return JSON.stringify(candidate)===JSON.stringify(bundle)?bundle:{...candidate,exportedAt:ranAt}
   }
-  const snapshot=createWeeklySnapshot(bundle.tasks,bundle.kpis),run:WeeklyRun={runId:schedule.runId,scheduledFor:schedule.scheduledFor,ranAt,trigger,missedWeekCount:missedWeeks(weekly.lastRun,schedule.scheduledFor),addedStickyCount:addedStickyCount+Number(!flow.nodes.some((node)=>node.id===`weekly-summary:${schedule.runId}`)),autoTaskCount:generated.created.length,outcome:'success',reasons:generated.reasons,snapshot}
+  const snapshot=createWeeklySnapshot(bundle.tasks,bundle.kpis,config),run:WeeklyRun={runId:schedule.runId,scheduledFor:schedule.scheduledFor,ranAt,trigger,missedWeekCount:missedWeeks(weekly.lastRun,schedule.scheduledFor),addedStickyCount:addedStickyCount+Number(!flow.nodes.some((node)=>node.id===`weekly-summary:${schedule.runId}`)),autoTaskCount:generated.created.length,outcome:'success',reasons:generated.reasons,snapshot}
   const summaryId=`weekly-summary:${schedule.runId}`,found=flow.nodes.find((node)=>node.id===summaryId),node=summaryNode(run,found?.position??managedPosition(flow,Object.keys(weekly.completions).length));flow={...flow,nodes:found?flow.nodes.map((item)=>item.id===summaryId?{...node,position:item.position}:item):[...flow.nodes,node]}
   const runs=[...weekly.runs.filter((item)=>item.runId!==run.runId),run].sort((a,b)=>a.scheduledFor.localeCompare(b.scheduledFor)).slice(-104),keptRunIds=new Set(runs.map((item)=>item.runId));flow={...flow,nodes:flow.nodes.filter((item)=>!item.id.startsWith('weekly-summary:')||keptRunIds.has(item.id.slice('weekly-summary:'.length)))}
-  flow=syncManagedProjectGraph(flow,generated.tasks,bundle.taskResults??[])
+  flow=syncManagedProjectGraph(flow,generated.tasks,bundle.taskResults??[],config)
   weekly={...weekly,lastRun:run,runs}
   const auditItem:AuditItem={id:`weekly-audit:${run.runId}`,issueId:'OP-WEEKLY-RUN',classification:'persistence',targetVersion:'0.4.0',files:['src/weekly.ts','src/App.tsx'],before:existingRun?'同一週の既存bundle':'週次未実行bundle',after:`付箋追加 ${run.addedStickyCount}件 / 自動task ${run.autoTaskCount}件`,evidence:['schema v4全量validator通過後の単一bundle保存'],retest:'週次実行時の全量検証',residualRisk:'ブラウザ停止中の厳密00:00実行は保証せず、次回起動時に当週分をcatch-up',round:4,at:ranAt,action:'操作履歴 · 週次進行更新',detail:`${run.runId} (${trigger})。未実行週 ${run.missedWeekCount}。${run.reasons.join(' / ')||'新規提案なし'}`}
   return {...bundle,exportedAt:ranAt,tasks:generated.tasks,flow,weekly,audit:[auditItem,...bundle.audit.filter((item)=>item.id!==auditItem.id)]}

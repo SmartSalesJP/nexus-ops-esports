@@ -5,7 +5,7 @@ import { buildQuestOrder, jstDateKey, questAssigneeLabel, questComparisonReason,
 import { statuses, type Status, type Task, type TaskResultSheet } from '../types'
 
 type StatusChangeResult={ok:boolean;issues?:string[]}
-type Props={tasks:Task[];taskResults?:TaskResultSheet[];readOnly?:boolean;busy?:boolean;onResult?:(task:Task)=>void;onStatus:(id:string,status:Status,holdReason?:string)=>Promise<StatusChangeResult>}
+type Props={tasks:Task[];taskResults?:TaskResultSheet[];readOnly?:boolean;busy?:boolean;customWorkspace?:boolean;onResult?:(task:Task)=>void;onStatus:(id:string,status:Status,holdReason?:string)=>Promise<StatusChangeResult>}
 
 const meaningful=(value:string)=>value.replace(/[\s\u200b-\u200d\ufeff]/gu,'').length>0
 
@@ -52,11 +52,12 @@ function useLiveJstDateKey(){
   return key
 }
 
-export function QuestBoard({tasks,taskResults=[],readOnly=false,busy=false,onResult,onStatus}:Props){
+export function QuestBoard({tasks,taskResults=[],readOnly=false,busy=false,customWorkspace=false,onResult,onStatus}:Props){
   const referenceKey=useLiveJstDateKey(),referenceDate=useMemo(()=>new Date(`${referenceKey}T12:00:00+09:00`),[referenceKey]),order=useMemo(()=>buildQuestOrder(tasks,referenceDate),[referenceDate,tasks])
   const [selected,setSelected]=useState<string|null>(null),[announcement,setAnnouncement]=useState(''),[focusRequest,setFocusRequest]=useState<{id:string;status:Status;sequence:number;previousNowId?:string}|null>(null),[nextLimit,setNextLimit]=useState(5),headingRef=useRef<HTMLHeadingElement>(null),boardRef=useRef<HTMLElement>(null),focusSequenceRef=useRef(0),handledFocusSequenceRef=useRef(0)
   const resultByTask=useMemo(()=>new Map(taskResults.map((result)=>[result.taskId,result])),[taskResults])
   const queuesByAssignee=useMemo(()=>{const queues=new Map<string,{ready:QuestEntry[];waiting:QuestEntry[];completed:QuestEntry[]}>();for(const key of order.assigneeKeys)queues.set(key,{ready:[],waiting:[],completed:[]});for(const bucket of ['ready','waiting','completed'] as const)for(const entry of order[bucket])for(const key of entry.assigneeKeys)queues.get(key)?.[bucket].push(entry);return queues},[order])
+  const visibleAssigneeKeys=customWorkspace?order.assigneeKeys.filter((key)=>{const queue=queuesByAssignee.get(key);return !!queue&&(queue.ready.length+queue.waiting.length+queue.completed.length)>0}):order.assigneeKeys
   const selectedQuests=selected?queuesByAssignee.get(selected)??null:null
   useEffect(()=>{
     if(!focusRequest||handledFocusSequenceRef.current>=focusRequest.sequence)return
@@ -80,11 +81,11 @@ export function QuestBoard({tasks,taskResults=[],readOnly=false,busy=false,onRes
   if(!selected)return <section ref={boardRef} className="quest-board" aria-labelledby="quest-overview-title">
     <div className="section-heading"><div><span className="eyebrow">QUEST ORDER / LIVE</span><h2 id="quest-overview-title">全担当者の次アクション</h2><p>保存済みの全タスクから、各担当者の「今やる」1件を表示します。</p></div></div>
     <p className="quest-rule-note"><Flag size={17}/><span>期限帯 → 緊急度 → 状態 → 直接解除件数 → 期限日 → Phase → IDで決定。責任者は担当者へ混ぜません。</span></p>
-    <div className="quest-overview-grid">{order.assigneeKeys.map((key,index)=>{const quests=queuesByAssignee.get(key)!,next=quests.ready[0],label=questAssigneeLabel(key),allComplete=!next&&!quests.waiting.length&&quests.completed.length>0;return <article className={`quest-person-card ${allComplete?'is-complete':''}`} key={key}><header><div className="quest-person-avatar" aria-hidden="true">{label.slice(0,1)}</div><div><h3>{label}</h3><p>実行可能 {quests.ready.length} · 解除待ち {quests.waiting.length}</p></div></header>{next?<div className="quest-person-next"><span>#1 システム推奨</span><b>{next.task.id}</b><p>{next.task.title}</p><small>{next.deadline.label} · 緊急度 {next.task.urgency}</small></div>:quests.waiting.length?<div className="quest-person-empty is-locked"><KeyRound size={20}/><span>今すぐ着手できません</span></div>:<div className="quest-person-empty"><CheckCircle2 size={20}/><span>{allComplete?'担当タスクはすべて完了':'今やるタスクなし'}</span></div>}<button id={`quest-person-${index}`} type="button" className="button quest-person-open" onClick={()=>{setNextLimit(5);setAnnouncement('');setSelected(key)}} aria-label={label==='未割当'?'未割当の実行順を開く':`${label}さんの実行順を開く`}>{label==='未割当'?'未割当の実行順':'実行順を見る'}</button></article>})}</div>
+    <div className="quest-overview-grid">{visibleAssigneeKeys.map((key,index)=>{const quests=queuesByAssignee.get(key)!,next=quests.ready[0],label=questAssigneeLabel(key),allComplete=!next&&!quests.waiting.length&&quests.completed.length>0;return <article className={`quest-person-card ${allComplete?'is-complete':''}`} key={key}><header><div className="quest-person-avatar" aria-hidden="true">{label.slice(0,1)}</div><div><h3>{label}</h3><p>実行可能 {quests.ready.length} · 解除待ち {quests.waiting.length}</p></div></header>{next?<div className="quest-person-next"><span>#1 システム推奨</span><b>{next.task.id}</b><p>{next.task.title}</p><small>{next.deadline.label} · 緊急度 {next.task.urgency}</small></div>:quests.waiting.length?<div className="quest-person-empty is-locked"><KeyRound size={20}/><span>今すぐ着手できません</span></div>:<div className="quest-person-empty"><CheckCircle2 size={20}/><span>{allComplete?'担当タスクはすべて完了':'今やるタスクなし'}</span></div>}<button id={`quest-person-${index}`} type="button" className="button quest-person-open" onClick={()=>{setNextLimit(5);setAnnouncement('');setSelected(key)}} aria-label={label==='未割当'?'未割当の実行順を開く':`${label}さんの実行順を開く`}>{label==='未割当'?'未割当の実行順':'実行順を見る'}</button></article>})}</div>
   </section>
   const label=questAssigneeLabel(selected),ready=selectedQuests?.ready??[],waiting=selectedQuests?.waiting??[],completed=selectedQuests?.completed??[],now=ready[0],next=ready.slice(1)
   return <section ref={boardRef} className="quest-board quest-detail" aria-labelledby="quest-detail-title">
-    <button type="button" className="button ghost quest-back" onClick={()=>{const index=order.assigneeKeys.indexOf(selected);setSelected(null);setFocusRequest(null);setAnnouncement('全担当者の次アクションへ戻りました。');requestAnimationFrame(()=>document.getElementById(`quest-person-${index}`)?.focus())}}><ChevronLeft size={17}/>全担当者へ戻る</button>
+    <button type="button" className="button ghost quest-back" onClick={()=>{const index=visibleAssigneeKeys.indexOf(selected);setSelected(null);setFocusRequest(null);setAnnouncement('全担当者の次アクションへ戻りました。');requestAnimationFrame(()=>document.getElementById(`quest-person-${index}`)?.focus())}}><ChevronLeft size={17}/>全担当者へ戻る</button>
     <div className="section-heading"><div><span className="eyebrow">MY QUESTS</span><h2 id="quest-detail-title" ref={headingRef} tabIndex={-1}>{label}{label==='未割当'?'':'さん'}の実行順</h2><p>共同担当タスクは同じTask IDと共有状態で表示します。</p></div></div>
     <p className="sr-only" role="status" aria-live="polite">{announcement}</p>
     <section className="quest-now" aria-labelledby="quest-now-title"><h3 id="quest-now-title"><Play size={18}/>今やる</h3>{now?<QuestCard entry={now} rank={1} current comparison={questComparisonReason(now,next[0])} readOnly={readOnly} busy={busy} onStatus={onStatus} onResult={onResult} onConfirmed={confirmed} result={resultByTask.get(now.task.id)}/>:<div className="quest-empty">{waiting.length?<KeyRound/>:<CheckCircle2/>}<b>{waiting.length?'今すぐ着手できません':'今すぐ実行できるタスクはありません'}</b><span>{waiting.length?'解除待ちの条件を確認してください。':'担当タスクは完了済み、または未登録です。'}</span></div>}</section>

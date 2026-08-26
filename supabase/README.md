@@ -1,5 +1,17 @@
 # NEXUS OPS Supabase database
 
+## Additional organizations
+
+`rpc_bootstrap_organization` remains the one-time administrator-approved first-owner path. It is not reused for ordinary creation.
+
+An authenticated user with at least one owner membership on an active organization may call `rpc_create_organization`. The RPC validates bounded text, a 3〜7 Phase/2〜12 department config, 5〜20 initial custom tasks, required singleton entities, and an audit entity. It creates the organization, creator owner membership, private workspace profile/config, organization-scoped entities/links, server audit events, and `(actor_user_id, run_id)` creation registry in one transaction. Identical retries return the same result; a reused run ID with different JSON is rejected. A duplicate slug or any late entity/reference failure rolls back every insert.
+
+`app_private.workspace_profiles`, `workspace_configs`, and `organization_creation_requests` have RLS enabled with no client policies or API-role grants. `rpc_create_organization` and `rpc_organization_creation_capability` use `SECURITY DEFINER`, an empty `search_path`, fully qualified relations, revoked default/API execution, and an explicit `authenticated` grant. No table DML grant is added. The expected advisor result is the documented authenticated definer warning only; investigate any other new finding relative to the existing baseline.
+
+`rpc_update_workspace_settings` is authenticated but owner-only and updates profile/config plus only the entity fields that depend on their display configuration; task-specific `owner` values remain authoritative. Once an organization has a workspace config, the shared `app_private.execute_changes` engine validates the committed task/phase/department/flow/dependency/result graph at the end of every apply, weekly, import, and settings transaction. A mismatch raises and rolls the entire mutation back; legacy organizations without a config retain the previous behavior. Migration 1 deliberately leaves `rpc_create_organization` revoked from `authenticated`; the hardening migration grants it only as its final statement after the strict validators and shared guard exist.
+
+`app_private.workspace_settings_valid` strictly validates every profile/config JSON scalar type, bounded name, department owner, terminology value, contiguous Phase code, allowed department ID, and the exact `nexus-local-v1` generator version. Owner-only `rpc_update_workspace_settings` updates the profile/config and related entity bundle atomically through the existing change executor. Its default, `anon`, and `service_role` execute privileges are revoked; only `authenticated` receives execute permission.
+
 This directory defines the reproducible database boundary for the existing Supabase project:
 
 - project ref: `tfbiecbetxvxjksvptbx`

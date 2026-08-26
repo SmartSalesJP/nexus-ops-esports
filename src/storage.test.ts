@@ -5,6 +5,7 @@ import { SOURCE_CATALOG } from './sourceCatalog'
 import { KEYS, parseImport, readBundle, saveBundle, validateBundle, validateTaskCandidate } from './storage'
 import { departmentIdFor, normalizeDepartmentName, type ExportBundle, type Task } from './types'
 import { canonicalFingerprint, emptyWeeklyState, runWeeklyBundle } from './weekly'
+import { generateWorkspaceDraft } from './workspace'
 
 const bundle=():ExportBundle=>({schemaVersion:4,exportedAt:new Date().toISOString(),tasks:structuredClone(initialTasks),flow:{nodes:structuredClone(initialNodes),edges:structuredClone(initialEdges),viewport:structuredClone(initialViewport)},audit:structuredClone(initialAudit),kpis:structuredClone(initialKpis),reportBaseline:null,migrationArchive:[],weekly:emptyWeeklyState()})
 beforeEach(()=>localStorage.clear())
@@ -70,6 +71,7 @@ describe('authoritative S4 plan',()=>{
 
 describe('schema v4 validation and migration',()=>{
   it('accepts the initial bundle',()=>expect(validateBundle(bundle())).toEqual([]))
+  it('round-trips a custom workspace profile/config without supplementing legacy 73 tasks',()=>{const draft=generateWorkspaceDraft({organizationName:'研究所',slug:'research-lab',projectName:'顧客調査',purpose:'顧客の課題を安全に調査し、検証可能な改善案を作成するためのプロジェクトです。',knownTasks:'調査設計\n対象者募集\nインタビュー\n分析\n改善案共有',phaseCount:3,taskTerm:'作業',phaseTerm:'段階',departmentTerm:'担当'},'2026-08-26T00:00:00.000Z'),custom={...draft.bundle,workspaceProfile:draft.profile,workspaceConfig:draft.config},parsed=parseImport(JSON.stringify(custom));expect(parsed.ok).toBe(true);expect(parsed.value.tasks).toHaveLength(5);expect(parsed.value.tasks.every((task)=>task.id.startsWith('C'))).toBe(true);expect(parsed.value.workspaceProfile).toEqual(draft.profile);expect(parsed.value.workspaceConfig).toEqual(draft.config);expect(saveBundle(parsed.value).ok).toBe(true);expect(readBundle().value.workspaceConfig).toEqual(draft.config);expect(readBundle().value.tasks).toHaveLength(5)})
   it('rejects unknown raw teams instead of falling back to administration',()=>{expect(departmentIdFor('未知チーム')).toBeUndefined();expect(normalizeDepartmentName('未知チーム')).toBeUndefined();const value=bundle();value.tasks[0].rawTeam='未知チーム';expect(validateBundle(value).some((issue)=>issue.path.endsWith('rawTeam'))).toBe(true)})
   it('archives a v2 bundle exactly while activating P73 once',()=>{
     const legacyTasks=[{id:'T-001',title:'ユーザー編集済み',status:'レビュー',custom:{memo:'保持'}}]
@@ -116,6 +118,7 @@ describe('schema v4 validation and migration',()=>{
     expect(validateBundle(result.value)).toEqual([])
   })
   it('rejects blank and zero-width hold reasons',()=>{for(const reason of ['', '   ', '\u200b']){const task={...initialTasks[0],status:'保留' as const,holdReason:reason};expect(validateTaskCandidate(task,initialTasks).some((issue)=>issue.path.endsWith('holdReason'))).toBe(true)}})
+  it('requires a visible task owner within 120 characters',()=>{for(const owner of ['', '   ', '\u200b', 'a'.repeat(121)]){const task={...initialTasks[0],owner};expect(validateTaskCandidate(task,initialTasks).some((issue)=>issue.path.endsWith('owner'))).toBe(true)}expect(validateTaskCandidate({...initialTasks[0],owner:'a'.repeat(120)},initialTasks)).toEqual([])})
   it('rejects missing dependency and cycles',()=>{const missing={...initialTasks[0],dependencies:['P9-99']};expect(validateTaskCandidate(missing,initialTasks).some((issue)=>issue.message.includes('存在しない'))).toBe(true);const a={...initialTasks[0],dependencies:['P0-02']},b={...initialTasks[1],dependencies:['P0-01']};expect(validateTaskCandidate(a,initialTasks.map((task)=>task.id===b.id?b:task)).some((issue)=>issue.message.includes('循環'))).toBe(true)})
   it('atomically rejects malicious source, flow, edge and audit bundles',()=>{
     localStorage.setItem('sentinel','unchanged')

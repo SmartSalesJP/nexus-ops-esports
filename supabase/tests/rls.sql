@@ -45,12 +45,15 @@ begin
   end loop;
 
   foreach v_function in array array[
+    'public.rpc_organization_creation_capability()'::regprocedure,
+    'public.rpc_create_organization(text,text,text,text,text,text,jsonb,jsonb,uuid)'::regprocedure,
     'public.rpc_bootstrap_organization(text,text,uuid)'::regprocedure,
     'public.rpc_list_my_organizations()'::regprocedure,
     'public.rpc_read_snapshot(uuid)'::regprocedure,
     'public.rpc_apply_changes(uuid,bigint,jsonb,uuid)'::regprocedure,
     'public.rpc_save_weekly(uuid,bigint,jsonb,uuid)'::regprocedure,
     'public.rpc_import_v4(uuid,bigint,uuid,text,text,text,bigint,integer,jsonb)'::regprocedure,
+    'public.rpc_update_workspace_settings(uuid,bigint,jsonb,jsonb,jsonb,uuid)'::regprocedure,
     'public.rpc_list_memberships(uuid)'::regprocedure,
     'public.rpc_manage_membership(uuid,uuid,text,text,bigint,bigint,uuid)'::regprocedure
   ] loop
@@ -62,6 +65,20 @@ begin
     end if;
     if pg_catalog.has_function_privilege('service_role', v_function, 'EXECUTE') then
       raise exception 'service_role can unexpectedly execute %', v_function;
+    end if;
+  end loop;
+
+  foreach v_table in array array[
+    'workspace_profiles', 'workspace_configs', 'organization_creation_requests'
+  ] loop
+    if not exists (
+      select 1 from pg_catalog.pg_class as c
+      join pg_catalog.pg_namespace as n on n.oid = c.relnamespace
+      where n.nspname = 'app_private' and c.relname = v_table and c.relrowsecurity
+    ) or pg_catalog.has_table_privilege('anon', format('app_private.%I', v_table), 'SELECT')
+       or pg_catalog.has_table_privilege('authenticated', format('app_private.%I', v_table), 'SELECT')
+       or pg_catalog.has_table_privilege('service_role', format('app_private.%I', v_table), 'SELECT') then
+      raise exception 'private organization creation table exposure is wrong: %', v_table;
     end if;
   end loop;
 
@@ -171,6 +188,78 @@ revoke all on function public.nexus_test_task_result_payload(text, text)
   from public, anon, authenticated, service_role;
 grant execute on function public.nexus_test_task_result_payload(text, text)
   to authenticated;
+
+create function public.nexus_test_creation_changes()
+returns jsonb
+language sql
+stable
+security invoker
+set search_path = ''
+as $$
+  select (select jsonb_agg(jsonb_build_object(
+      'op', 'upsert', 'entityType', 'task', 'entityId', 'C0-' || lpad(n::text, 2, '0'),
+      'expectedVersion', 0, 'ordinal', n - 1, 'references', '[]'::jsonb,
+      'payload', jsonb_build_object(
+        'id', 'C0-' || lpad(n::text, 2, '0'), 'title', 'Created task ' || n,
+        'phase', 0, 'teamId', 'planning', 'team', 'Planning', 'rawTeam', 'Planning',
+        'owner', 'Unassigned', 'assignees', '[]'::jsonb, 'rawAssignees', '',
+        'personKeys', '[]'::jsonb, 'urgency', '中', 'deadline', '未設定',
+        'status', '未着手', 'holdReason', '', 'dependencies', '[]'::jsonb,
+        'notes', '[]'::jsonb, 'sourceRefs', '[]'::jsonb,
+        'updatedAt', '2026-08-26T00:00:00.000Z'
+      )
+    ) order by n) from generate_series(1, 5) as tasks(n))
+  || (select jsonb_agg(jsonb_build_object(
+      'op','upsert','entityType','flow_node','entityId','phase-' || phase,
+      'expectedVersion',0,'ordinal',phase,
+      'payload',jsonb_build_object(
+        'id','phase-' || phase,'position',jsonb_build_object('x',phase * 260,'y',120),
+        'data',jsonb_build_object('label',case phase when 0 then 'Plan' when 1 then 'Do' else 'Review' end,'taskIds',case when phase = 0 then jsonb_build_array('C0-01','C0-02','C0-03','C0-04','C0-05') else '[]'::jsonb end)
+      ),
+      'references',case when phase = 0 then jsonb_build_array(
+        jsonb_build_object('kind','task','entityType','task','entityId','C0-01'),
+        jsonb_build_object('kind','task','entityType','task','entityId','C0-02'),
+        jsonb_build_object('kind','task','entityType','task','entityId','C0-03'),
+        jsonb_build_object('kind','task','entityType','task','entityId','C0-04'),
+        jsonb_build_object('kind','task','entityType','task','entityId','C0-05')
+      ) else '[]'::jsonb end
+    ) order by phase) from generate_series(0, 2) as nodes(phase))
+  || (select jsonb_agg(jsonb_build_object(
+      'op','upsert','entityType','flow_edge','entityId','initial-phase-edge-' || edge,
+      'expectedVersion',0,'ordinal',edge,
+      'payload',jsonb_build_object('id','initial-phase-edge-' || edge,'source','phase-' || edge,'target','phase-' || (edge + 1)),
+      'references',jsonb_build_array(
+        jsonb_build_object('kind','source','entityType','flow_node','entityId','phase-' || edge),
+        jsonb_build_object('kind','target','entityType','flow_node','entityId','phase-' || (edge + 1))
+      )
+    ) order by edge) from generate_series(0, 1) as edges(edge))
+  || jsonb_build_array(
+    jsonb_build_object(
+      'op','upsert','entityType','flow_viewport','entityId','singleton','expectedVersion',0,
+      'payload',jsonb_build_object('id','singleton','x',0,'y',0,'zoom',1),'references','[]'::jsonb
+    ),
+    jsonb_build_object(
+      'op','upsert','entityType','report_baseline','entityId','singleton','expectedVersion',0,
+      'payload',jsonb_build_object('id','singleton','value',null),'references','[]'::jsonb
+    ),
+    jsonb_build_object(
+      'op','upsert','entityType','weekly_meta','entityId','singleton','expectedVersion',0,
+      'payload',jsonb_build_object('id','singleton','lastRunId',null),'references','[]'::jsonb
+    ),
+    jsonb_build_object(
+      'op','upsert','entityType','client_audit','entityId','workspace-create-test','expectedVersion',0,
+      'payload',jsonb_build_object(
+        'id','workspace-create-test','issueId','OP-WORKSPACE-CREATE','classification','persistence',
+        'targetVersion','0.5.0','files',jsonb_build_array('preview'),'before','not created',
+        'after','created','evidence',jsonb_build_array('preview confirmed'),'retest','read back',
+        'residualRisk','none','round',1,'at','2026-08-26T00:00:00.000Z',
+        'action','organization create','detail','test fixture'
+      ),'references','[]'::jsonb
+    )
+  )
+$$;
+revoke all on function public.nexus_test_creation_changes() from public, anon, authenticated, service_role;
+grant execute on function public.nexus_test_creation_changes() to authenticated;
 
 set local role authenticated;
 select pg_catalog.set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-000000000001', true);
@@ -1857,6 +1946,322 @@ begin
     raise exception 'viewer task result write unexpectedly succeeded';
   exception when insufficient_privilege then null;
   end;
+end;
+$$;
+
+-- Organization creation is capability-gated, atomic, idempotent, and isolated.
+select pg_catalog.set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-000000000003', true);
+do $$
+begin
+  if (public.rpc_organization_creation_capability()->>'allowed')::boolean then
+    raise exception 'non-owner unexpectedly received organization creation capability';
+  end if;
+  begin
+    perform public.rpc_create_organization(
+      'Denied Org','denied-org','Denied project',repeat('purpose ',4),'','nexus-local-v1',
+      '{"version":1,"phases":[{"code":0,"name":"Plan"},{"code":1,"name":"Do"},{"code":2,"name":"Review"}],"departments":[{"id":"planning","name":"Planning","owner":"Unassigned"},{"id":"operations","name":"Operations","owner":"Unassigned"}],"terminology":{"task":"Task","phase":"Phase","department":"Department"}}'::jsonb,
+      public.nexus_test_creation_changes(),'20000000-0000-4000-8000-000000000040'
+    );
+    raise exception 'non-owner organization creation unexpectedly succeeded';
+  exception when insufficient_privilege then null;
+  end;
+end;
+$$;
+
+select pg_catalog.set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-000000000001', true);
+do $$
+declare
+  v_config constant jsonb := '{"version":1,"phases":[{"code":0,"name":"Plan"},{"code":1,"name":"Do"},{"code":2,"name":"Review"}],"departments":[{"id":"planning","name":"Planning","owner":"Unassigned"},{"id":"operations","name":"Operations","owner":"Unassigned"}],"terminology":{"task":"Task","phase":"Phase","department":"Department"}}'::jsonb;
+  v_changes jsonb := public.nexus_test_creation_changes();
+  v_bad_changes jsonb;
+  v_first jsonb;
+  v_replay jsonb;
+  v_settings_first jsonb;
+  v_settings_replay jsonb;
+  v_settings_changes jsonb;
+  v_profile jsonb;
+  v_settings_run constant uuid := '20000000-0000-4000-8000-000000000046';
+  v_snapshot jsonb;
+  v_before integer;
+begin
+  if not (public.rpc_organization_creation_capability()->>'allowed')::boolean then
+    raise exception 'active owner capability was not returned';
+  end if;
+  v_first := public.rpc_create_organization(
+    'Created Org','created-org','Created project',repeat('purpose ',4),'task notes','nexus-local-v1',
+    v_config,v_changes,'20000000-0000-4000-8000-000000000041'
+  );
+  v_replay := public.rpc_create_organization(
+    'Created Org','created-org','Created project',repeat('purpose ',4),'task notes','nexus-local-v1',
+    v_config,v_changes,'20000000-0000-4000-8000-000000000041'
+  );
+  if v_first->>'role' <> 'owner' or v_first->>'stateVersion' <> '1'
+     or v_replay->>'organizationId' <> v_first->>'organizationId'
+     or v_replay->>'idempotent' <> 'true' then
+    raise exception 'organization create/replay result is incorrect';
+  end if;
+  perform pg_catalog.set_config('nexus.test.created_org', v_first->>'organizationId', true);
+  v_snapshot := public.rpc_read_snapshot((v_first->>'organizationId')::uuid);
+  if v_snapshot->'workspaceProfile'->>'projectName' <> 'Created project'
+     or v_snapshot->'workspaceConfig' <> v_config
+     or jsonb_array_length(v_snapshot->'entities') <> 14
+     or v_snapshot->>'role' <> 'owner' then
+    raise exception 'created organization snapshot/profile/config is incorrect';
+  end if;
+  begin
+    perform public.rpc_create_organization(
+      'Changed Name','created-org','Created project',repeat('purpose ',4),'task notes','nexus-local-v1',
+      v_config,v_changes,'20000000-0000-4000-8000-000000000041'
+    );
+    raise exception 'same run with different payload unexpectedly succeeded';
+  exception when invalid_parameter_value then null;
+  end;
+  select count(*) into v_before from public.organizations;
+  begin
+    perform public.rpc_create_organization(
+      'Duplicate Slug','created-org','Created project',repeat('purpose ',4),'task notes','nexus-local-v1',
+      v_config,v_changes,'20000000-0000-4000-8000-000000000042'
+    );
+    raise exception 'duplicate slug unexpectedly succeeded';
+  exception when unique_violation then null;
+  end;
+  if (select count(*) from public.organizations) <> v_before then
+    raise exception 'failed create left a partial organization';
+  end if;
+  v_bad_changes := jsonb_set(v_changes, '{0,payload,teamId}', '"sales"'::jsonb);
+  begin
+    perform public.rpc_create_organization(
+      'Mismatched Config','mismatched-config','Created project',repeat('purpose ',4),'task notes','nexus-local-v1',
+      v_config,v_bad_changes,'20000000-0000-4000-8000-000000000043'
+    );
+    raise exception 'task outside configured departments unexpectedly succeeded';
+  exception when invalid_parameter_value then null;
+  end;
+  if (select count(*) from public.organizations) <> v_before then
+    raise exception 'config validation failure left a partial organization';
+  end if;
+  v_bad_changes := jsonb_set(v_changes, '{5,payload,data,label}', '"Wrong phase"'::jsonb);
+  begin
+    perform public.rpc_create_organization(
+      'Mismatched Flow','mismatched-flow','Created project',repeat('purpose ',4),'task notes','nexus-local-v1',
+      v_config,v_bad_changes,'20000000-0000-4000-8000-000000000045'
+    );
+    raise exception 'flow label outside configured phases unexpectedly succeeded';
+  exception when invalid_parameter_value then null;
+  end;
+  if (select count(*) from public.organizations) <> v_before then
+    raise exception 'flow/config validation failure left a partial organization';
+  end if;
+  -- Strict jsonb types and required fields fail before any tenant row commits.
+  for v_bad_changes in select value from jsonb_array_elements(jsonb_build_array(
+    v_config #- '{departments,0,owner}',
+    jsonb_set(v_config,'{departments,0,owner}','1'::jsonb),
+    jsonb_set(v_config,'{departments,0,owner}','""'::jsonb),
+    jsonb_set(v_config,'{departments,0,owner}','"   "'::jsonb),
+    jsonb_set(v_config,'{departments,0,owner}','"​"'::jsonb),
+    jsonb_set(v_config,'{departments,0,name}','1'::jsonb),
+    jsonb_set(v_config,'{phases,0,name}','1'::jsonb),
+    jsonb_set(v_config,'{terminology,task}','1'::jsonb)
+  )) loop
+    begin
+      perform public.rpc_create_organization(
+        'Invalid Typed Config','invalid-' || substr(md5(v_bad_changes::text),1,12),
+        'Created project',repeat('purpose ',4),'task notes','nexus-local-v1',
+        v_bad_changes,v_changes,gen_random_uuid()
+      );
+      raise exception 'strict workspace config unexpectedly succeeded';
+    exception when check_violation or invalid_parameter_value then null;
+    end;
+  end loop;
+  -- Task responsibility has the same visible 1..120 character contract in the
+  -- generic mutation validator and in the custom workspace graph guard.
+  for v_bad_changes in
+    select jsonb_set(v_changes,'{0,payload,owner}',owner.value)
+    from jsonb_array_elements('["","   ","​"]'::jsonb) as owner(value)
+  loop
+    begin
+      perform public.rpc_create_organization(
+        'Invalid Task Owner','invalid-owner-' || substr(md5(v_bad_changes::text),1,12),
+        'Created project',repeat('purpose ',4),'task notes','nexus-local-v1',
+        v_config,v_bad_changes,gen_random_uuid()
+      );
+      raise exception 'blank or invisible task owner unexpectedly succeeded';
+    exception when invalid_parameter_value then null;
+    end;
+  end loop;
+  if (select count(*) from public.organizations) <> v_before then
+    raise exception 'task owner validation failure left a partial organization';
+  end if;
+  begin
+    perform public.rpc_create_organization(
+      'Invalid Generator','invalid-generator','Created project',repeat('purpose ',4),'task notes','nexus-local-v2',
+      v_config,v_changes,gen_random_uuid()
+    );
+    raise exception 'unsupported generator unexpectedly succeeded';
+  exception when check_violation or invalid_parameter_value then null;
+  end;
+  begin
+    perform public.rpc_update_workspace_settings(
+      (v_first->>'organizationId')::uuid,1,
+      jsonb_build_object('projectName',1,'purpose',repeat('purpose ',4),'knownTasks','task notes','generatorVersion','nexus-local-v1','createdAt',clock_timestamp()::text),
+      v_config,v_changes,gen_random_uuid()
+    );
+    raise exception 'numeric profile field unexpectedly succeeded';
+  exception when invalid_parameter_value then null;
+  end;
+  begin
+    perform public.rpc_update_workspace_settings(
+      (v_first->>'organizationId')::uuid,1,
+      jsonb_build_object('projectName','Created project','purpose',repeat('purpose ',4),'knownTasks','task notes','generatorVersion','nexus-local-v1','createdAt',clock_timestamp()::text),
+      jsonb_set(v_config,'{departments,0,name}','"Renamed without task updates"'::jsonb),
+      jsonb_build_array(jsonb_build_object(
+        'op','upsert','entityType','client_audit','entityId','settings-config-mismatch','expectedVersion',0,
+        'payload',jsonb_build_object(
+          'id','settings-config-mismatch','issueId','SETTINGS-CONFIG-MISMATCH','classification','persistence',
+          'targetVersion','0.5.0','files',jsonb_build_array('workspace config'),'before','matched','after','mismatched',
+          'evidence',jsonb_build_array('SQL self-test'),'retest','rollback','residualRisk','none','round',2,
+          'at',clock_timestamp()::text,'action','negative settings test','detail','task labels were intentionally not updated'
+        ),'references','[]'::jsonb
+      )),gen_random_uuid()
+    );
+    raise exception 'workspace config/entity mismatch unexpectedly succeeded';
+  exception when invalid_parameter_value then null;
+  end;
+  if (select count(*) from public.organizations) <> v_before
+     or (public.rpc_read_snapshot((v_first->>'organizationId')::uuid)->'organization'->>'stateVersion')::bigint <> 1
+     or public.rpc_read_snapshot((v_first->>'organizationId')::uuid)->'workspaceConfig' <> v_config then
+    raise exception 'strict settings validation failure was not atomic';
+  end if;
+  -- Owner settings update is read back, preserves task-specific owners, and is
+  -- idempotent for the same actor/run/payload while rejecting payload drift.
+  v_snapshot := public.rpc_read_snapshot((v_first->>'organizationId')::uuid);
+  v_profile := jsonb_build_object(
+    'projectName','Renamed project','purpose',repeat('purpose ',4),'knownTasks','task notes',
+    'generatorVersion','nexus-local-v1','createdAt','2026-08-26T00:00:00.000Z'
+  );
+  v_settings_changes := jsonb_build_array(jsonb_build_object(
+    'op','upsert','entityType','client_audit','entityId','workspace-create-test','expectedVersion',1,
+    'payload',(
+      select entity.value->'payload' || jsonb_build_object('detail','settings update without owner rewrite')
+      from jsonb_array_elements(v_snapshot->'entities') as entity(value)
+      where entity.value->>'entityType'='client_audit'
+        and entity.value->>'entityId'='workspace-create-test'
+    ),
+    'references','[]'::jsonb
+  ));
+  v_settings_first := public.rpc_update_workspace_settings(
+    (v_first->>'organizationId')::uuid,1,v_profile,v_config,v_settings_changes,v_settings_run
+  );
+  v_settings_replay := public.rpc_update_workspace_settings(
+    (v_first->>'organizationId')::uuid,1,v_profile,v_config,v_settings_changes,v_settings_run
+  );
+  v_snapshot := public.rpc_read_snapshot((v_first->>'organizationId')::uuid);
+  if v_settings_first->>'stateVersion' <> '2'
+     or v_settings_replay->>'idempotent' <> 'true'
+     or v_snapshot->'workspaceProfile'->>'projectName' <> 'Renamed project'
+     or v_snapshot->'organization'->>'stateVersion' <> '2'
+     or exists (
+       select 1 from jsonb_array_elements(v_snapshot->'entities') as entity(value)
+       where entity.value->>'entityType'='task' and entity.value->'payload'->>'owner' <> 'Unassigned'
+     ) then
+    raise exception 'owner settings update/readback/idempotency or task owner preservation failed';
+  end if;
+  begin
+    perform public.rpc_update_workspace_settings(
+      (v_first->>'organizationId')::uuid,1,
+      jsonb_set(v_profile,'{projectName}','"Payload drift"'::jsonb),
+      v_config,v_settings_changes,v_settings_run
+    );
+    raise exception 'same settings run with different payload unexpectedly succeeded';
+  exception when invalid_parameter_value then null;
+  end;
+  if public.rpc_read_snapshot((v_first->>'organizationId')::uuid)->'workspaceProfile'->>'projectName' <> 'Renamed project' then
+    raise exception 'rejected settings payload drift was not rolled back';
+  end if;
+  -- This passes the creation envelope and fails late while relational links are
+  -- inserted, proving the preceding organization/profile/entity writes rollback.
+  v_bad_changes := jsonb_set(
+    jsonb_set(v_changes, '{8,payload,target}', '"missing-node"'::jsonb),
+    '{8,references,1,entityId}', '"missing-node"'::jsonb
+  );
+  begin
+    perform public.rpc_create_organization(
+      'Late Failure','late-failure','Created project',repeat('purpose ',4),'task notes','nexus-local-v1',
+      v_config,v_bad_changes,'20000000-0000-4000-8000-000000000044'
+    );
+    raise exception 'late cross-reference failure unexpectedly succeeded';
+  exception when foreign_key_violation then null;
+  end;
+  if (select count(*) from public.organizations) <> v_before
+     or exists (select 1 from public.organizations where slug = 'late-failure') then
+    raise exception 'late create failure was not atomic';
+  end if;
+end;
+$$;
+
+-- An owner of another organization may be invited as editor, but cannot update
+-- settings and cannot use the ordinary editor RPC to violate custom config.
+select public.rpc_manage_membership(
+  pg_catalog.current_setting('nexus.test.created_org')::uuid,
+  '10000000-0000-0000-0000-000000000002','editor','upsert',2,0,
+  '20000000-0000-4000-8000-000000000047'
+);
+select pg_catalog.set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-000000000002', true);
+do $$
+declare
+  v_org uuid := pg_catalog.current_setting('nexus.test.created_org')::uuid;
+  v_snapshot jsonb := public.rpc_read_snapshot(v_org);
+  v_task jsonb;
+begin
+  begin
+    perform public.rpc_update_workspace_settings(
+      v_org,3,v_snapshot->'workspaceProfile',v_snapshot->'workspaceConfig','[]'::jsonb,
+      '20000000-0000-4000-8000-000000000048'
+    );
+    raise exception 'editor workspace settings update unexpectedly succeeded';
+  exception when insufficient_privilege then null;
+  end;
+  select entity.value->'payload' into v_task
+  from jsonb_array_elements(v_snapshot->'entities') as entity(value)
+  where entity.value->>'entityType'='task' and entity.value->>'entityId'='C0-01';
+  begin
+    perform public.rpc_apply_changes(
+      v_org,3,jsonb_build_array(jsonb_build_object(
+        'op','upsert','entityType','task','entityId','C0-01','expectedVersion',1,
+        'payload',jsonb_set(jsonb_set(v_task,'{team}','"Wrong team"'::jsonb),'{rawTeam}','"Wrong team"'::jsonb),
+        'references','[]'::jsonb
+      )),'20000000-0000-4000-8000-000000000049'
+    );
+    raise exception 'editor broke custom workspace config through rpc_apply_changes';
+  exception when invalid_parameter_value then null;
+  end;
+  v_snapshot := public.rpc_read_snapshot(v_org);
+  if v_snapshot->'organization'->>'stateVersion' <> '3'
+     or exists (
+       select 1 from jsonb_array_elements(v_snapshot->'entities') as entity(value)
+       where entity.value->>'entityType'='task' and entity.value->>'entityId'='C0-01'
+         and entity.value->'payload'->>'team' <> 'Planning'
+     ) then
+    raise exception 'custom config mutation guard failure was not atomic';
+  end if;
+end;
+$$;
+
+-- A different authenticated user cannot read the newly created tenant.
+select pg_catalog.set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-000000000003', true);
+do $$
+begin
+  begin
+    perform public.rpc_update_workspace_settings(
+      pg_catalog.current_setting('nexus.test.created_org')::uuid,3,
+      '{}'::jsonb,'{}'::jsonb,'[]'::jsonb,'20000000-0000-4000-8000-000000000050'
+    );
+    raise exception 'non-member workspace settings update unexpectedly succeeded';
+  exception when insufficient_privilege then null;
+  end;
+  perform public.rpc_read_snapshot(pg_catalog.current_setting('nexus.test.created_org')::uuid);
+  raise exception 'cross-organization created workspace read unexpectedly succeeded';
+exception when insufficient_privilege then null;
 end;
 $$;
 

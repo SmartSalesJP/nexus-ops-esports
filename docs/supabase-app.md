@@ -1,5 +1,16 @@
 # Supabaseフロントエンド接続
 
+## Organization作成
+
+- 作成可否は `rpc_organization_creation_capability()` のserver read-backを正本とし、取得失敗時はfail-closedです。
+- `rpc_create_organization(...)` はactive organizationのowner membershipを1件以上持つ認証ユーザーだけ実行できます。
+- 自由文はブラウザ内のversion付き決定論generatorで処理し、外部AIや第三者APIへ送信しません。
+- 入力とpreviewは二段階です。previewではorganization名、Phase表示名、部門表示名、初期taskの名称・Phase・部門・責任者・期限・優先度を編集し、taskを5〜20件の範囲で追加・削除できます。
+- 作成後はorganization一覧とsnapshotを再取得し、bundle、profile、config、state versionがpreviewと一致した場合だけ選択状態を更新します。
+- 作成後のworkspace設定変更はowner限定の `rpc_update_workspace_settings(...)` でprofile/configと表示に依存するentityを単一transactionで更新し、snapshot再取得が候補と一致してから画面へ反映します。
+- server read-back完了後のlocalStorage書込み失敗は非致命warningとして表示し、作成済みorganizationの選択を失敗扱いにしません。
+- offline、権限拒否、slug競合、serverエラー時はdialogの入力とpreviewを保持します。二重送信はrun中ロックで抑止します。
+
 ## 公開境界
 
 GitHub PagesのHTML、JavaScript、CSS、source map、repository履歴はSupabase Authでは非公開になりません。本アプリでは、既に公開済みのS4静的正本と初期73タスク本文を公開seedとしてartifactへ含めます。Supabase Auth/RLSが保護するのは更新状態と共有編集データです。公開seed以外の非公開追記、利用者の個人情報、秘密情報、tokenをrepositoryや公開artifactへ含めないでください。ブラウザへ渡すSupabase値はProject URLとpublishable keyだけです。`service_role`、secret key、DB password、access tokenはフロントエンドやGitHub Actionsへ設定しません。
