@@ -2107,6 +2107,9 @@ declare
   v_late_after jsonb;
   v_invalid_settings_counts jsonb;
   v_invalid_settings_after jsonb;
+  v_invalid_settings_snapshot jsonb;
+  v_invalid_settings_after_snapshot jsonb;
+  v_invalid_settings_run uuid;
   v_expected_constraint text;
   v_failed_constraint text;
   v_snapshot jsonb;
@@ -2232,9 +2235,6 @@ begin
   exception when check_violation or invalid_parameter_value then null;
   end;
   v_snapshot := public.rpc_read_snapshot((v_first->>'organizationId')::uuid);
-  v_invalid_settings_counts := public.nexus_test_creation_state(
-    auth.uid(),'20000000-0000-4000-8000-000000000055','invalid-settings'
-  );
   for v_bad_changes in select value from jsonb_array_elements(jsonb_build_array(
     jsonb_build_object('label','empty profile','profile','{}'::jsonb,'config',v_config,'changes',v_changes),
     jsonb_build_object('label','missing profile field','profile',(v_snapshot->'workspaceProfile')-'purpose','config',v_config,'changes',v_changes),
@@ -2253,30 +2253,36 @@ begin
       'changes',jsonb_set(v_changes,'{0,expectedVersion}',to_jsonb(repeat('9',200)))
     )
   )) loop
+    v_invalid_settings_run := gen_random_uuid();
+    v_invalid_settings_counts := public.nexus_test_creation_state(
+      auth.uid(),v_invalid_settings_run,'invalid-settings'
+    );
+    v_invalid_settings_snapshot := public.rpc_read_snapshot(
+      (v_first->>'organizationId')::uuid
+    ) - 'readAt';
     begin
       perform public.rpc_update_workspace_settings(
         (v_first->>'organizationId')::uuid,1,
-        v_bad_changes->'profile',v_bad_changes->'config',v_bad_changes->'changes',gen_random_uuid()
+        v_bad_changes->'profile',v_bad_changes->'config',v_bad_changes->'changes',v_invalid_settings_run
       );
       raise exception 'invalid settings case unexpectedly succeeded: %',v_bad_changes->>'label';
     exception when invalid_parameter_value then null;
     end;
+    v_invalid_settings_after := public.nexus_test_creation_state(
+      auth.uid(),v_invalid_settings_run,'invalid-settings'
+    );
+    v_invalid_settings_after_snapshot := public.rpc_read_snapshot(
+      (v_first->>'organizationId')::uuid
+    ) - 'readAt';
+    if v_invalid_settings_after is distinct from v_invalid_settings_counts
+       or v_invalid_settings_after_snapshot is distinct from v_invalid_settings_snapshot then
+      raise exception 'invalid settings case changed state: %, evidence %',
+        v_bad_changes->>'label',jsonb_build_object(
+          'countsBefore',v_invalid_settings_counts,'countsAfter',v_invalid_settings_after,
+          'snapshotBefore',v_invalid_settings_snapshot,'snapshotAfter',v_invalid_settings_after_snapshot
+        );
+    end if;
   end loop;
-  v_invalid_settings_after := public.nexus_test_creation_state(
-    auth.uid(),'20000000-0000-4000-8000-000000000055','invalid-settings'
-  );
-  if v_invalid_settings_after <> v_invalid_settings_counts
-     or public.rpc_read_snapshot((v_first->>'organizationId')::uuid)->'organization'->>'stateVersion'
-       <> v_snapshot->'organization'->>'stateVersion'
-     or public.rpc_read_snapshot((v_first->>'organizationId')::uuid)->'workspaceProfile'
-       <> v_snapshot->'workspaceProfile'
-     or public.rpc_read_snapshot((v_first->>'organizationId')::uuid)->'workspaceConfig'
-       <> v_snapshot->'workspaceConfig'
-     or public.rpc_read_snapshot((v_first->>'organizationId')::uuid)->'entities'
-       <> v_snapshot->'entities' then
-    raise exception 'invalid settings payload changed state: before %, after %',
-      v_invalid_settings_counts,v_invalid_settings_after;
-  end if;
   begin
     perform public.rpc_update_workspace_settings(
       (v_first->>'organizationId')::uuid,1,
@@ -2395,11 +2401,13 @@ do $$
 declare
   v_org uuid := pg_catalog.current_setting('nexus.test.created_org')::uuid;
   v_snapshot jsonb := public.rpc_read_snapshot(v_org);
-  v_before_snapshot jsonb;
   v_task jsonb;
   v_bad_version text;
-  v_invalid_version_counts jsonb;
-  v_invalid_version_after jsonb;
+  v_invalid_run uuid;
+  v_case_before_counts jsonb;
+  v_case_after_counts jsonb;
+  v_case_before_snapshot jsonb;
+  v_case_after_snapshot jsonb;
 begin
   begin
     perform public.rpc_update_workspace_settings(
@@ -2414,30 +2422,35 @@ begin
   where entity.value->>'entityType'='task' and entity.value->>'entityId'='C0-01';
   -- The shared executor must reject numeric text outside bigint before every
   -- cast and before mutation/audit state is written.
-  v_before_snapshot := v_snapshot;
-  v_invalid_version_counts := public.nexus_test_creation_state(
-    auth.uid(),'20000000-0000-4000-8000-000000000051','invalid-version'
-  );
   foreach v_bad_version in array array['9223372036854775808',repeat('9',200)] loop
+    v_invalid_run := gen_random_uuid();
+    v_case_before_counts := public.nexus_test_creation_state(
+      auth.uid(),v_invalid_run,'invalid-version'
+    );
+    v_case_before_snapshot := public.rpc_read_snapshot(v_org) - 'readAt';
     begin
       perform public.rpc_apply_changes(
         v_org,3,jsonb_build_array(jsonb_build_object(
           'op','upsert','entityType','task','entityId','C0-01','expectedVersion',v_bad_version::numeric,
           'payload',v_task,'references','[]'::jsonb
-        )),gen_random_uuid()
+        )),v_invalid_run
       );
       raise exception 'out-of-range expectedVersion unexpectedly succeeded: %',v_bad_version;
     exception when invalid_parameter_value then null;
     end;
+    v_case_after_counts := public.nexus_test_creation_state(
+      auth.uid(),v_invalid_run,'invalid-version'
+    );
+    v_case_after_snapshot := public.rpc_read_snapshot(v_org) - 'readAt';
+    if v_case_after_counts is distinct from v_case_before_counts
+       or v_case_after_snapshot is distinct from v_case_before_snapshot then
+      raise exception 'out-of-range expectedVersion changed state: %, evidence %',
+        v_bad_version,jsonb_build_object(
+          'countsBefore',v_case_before_counts,'countsAfter',v_case_after_counts,
+          'snapshotBefore',v_case_before_snapshot,'snapshotAfter',v_case_after_snapshot
+        );
+    end if;
   end loop;
-  v_invalid_version_after := public.nexus_test_creation_state(
-    auth.uid(),'20000000-0000-4000-8000-000000000051','invalid-version'
-  );
-  if v_invalid_version_after <> v_invalid_version_counts
-     or public.rpc_read_snapshot(v_org) <> v_before_snapshot then
-    raise exception 'out-of-range expectedVersion changed state: before %, after %',
-      v_invalid_version_counts,v_invalid_version_after;
-  end if;
   begin
     perform public.rpc_apply_changes(
       v_org,3,jsonb_build_array(jsonb_build_object(
