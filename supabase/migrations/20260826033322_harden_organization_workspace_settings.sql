@@ -94,7 +94,7 @@ begin
     perform app_private.validate_entity_payload_v4_legacy(p_entity_type,p_entity_id,p_payload);
   end if;
   if p_entity_type = 'task' and (
-    pg_catalog.coalesce(pg_catalog.jsonb_typeof(p_payload->'owner'),'null') <> 'string'
+    coalesce(pg_catalog.jsonb_typeof(p_payload->'owner'),'null'::text) <> 'string'
     or pg_catalog.char_length(p_payload->>'owner') not between 1 and 120
     or p_payload->>'owner' !~ '[^[:space:][:cntrl:]​‌‍⁠﻿]'
   ) then
@@ -136,7 +136,7 @@ begin
             and department.value->>'name' = task.payload->>'team'
             and department.value->>'name' = task.payload->>'rawTeam'
         )
-        or pg_catalog.coalesce(pg_catalog.jsonb_typeof(task.payload->'owner'),'null') <> 'string'
+        or coalesce(pg_catalog.jsonb_typeof(task.payload->'owner'),'null'::text) <> 'string'
         or pg_catalog.char_length(task.payload->>'owner') not between 1 and 120
         or task.payload->>'owner' !~ '[^[:space:][:cntrl:]​‌‍⁠﻿]'
         or exists (
