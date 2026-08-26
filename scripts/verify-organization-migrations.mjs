@@ -3,8 +3,8 @@ import { stdout } from 'node:process'
 import { URL } from 'node:url'
 
 const createSignature='public.rpc_create_organization(text,text,text,text,text,text,jsonb,jsonb,uuid)'
-const firstPath=new URL('../supabase/migrations/20260826015357_create_organization_workspaces.sql',import.meta.url)
-const hardeningPath=new URL('../supabase/migrations/20260826033322_harden_organization_workspace_settings.sql',import.meta.url)
+const firstPath=new URL('../supabase/migrations/20260826065233_create_organization_workspaces.sql',import.meta.url)
+const hardeningPath=new URL('../supabase/migrations/20260826065243_harden_organization_workspace_settings.sql',import.meta.url)
 const [firstSource,hardeningSource]=await Promise.all([readFile(firstPath,'utf8'),readFile(hardeningPath,'utf8')])
 const fail=(message)=>{throw new Error(`organization migration order: ${message}`)}
 const withoutComments=(source)=>source.replace(/\/\*[\s\S]*?\*\//g,'').replace(/--[^\r\n]*/g,'')
