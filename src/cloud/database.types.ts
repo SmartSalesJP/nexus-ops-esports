@@ -1,4 +1,4 @@
-// Derived from supabase/migrations/20260817144520_nexus_ops_shared_schema.sql.
+// Derived from supabase/migrations/20260817065432_nexus_ops_shared_schema.sql.
 // CI regenerates the public schema from a reset local database and checks this
 // surface in both directions. Regenerate again after every remote migration.
 export type Json=string|number|boolean|null|{[key:string]:Json|undefined}|Json[]
