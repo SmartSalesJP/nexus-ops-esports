@@ -143,6 +143,12 @@ insert into auth.users (
    '{"provider":"email","providers":["email"]}'::jsonb, '{}'::jsonb, clock_timestamp(), clock_timestamp()),
   ('00000000-0000-0000-0000-000000000000', '10000000-0000-0000-0000-000000000004',
    'authenticated', 'authenticated', 'nexus-fixture-owner@example.invalid', '', clock_timestamp(),
+   '{"provider":"email","providers":["email"]}'::jsonb, '{}'::jsonb, clock_timestamp(), clock_timestamp()),
+  ('00000000-0000-0000-0000-000000000000', '10000000-0000-0000-0000-000000000005',
+   'authenticated', 'authenticated', 'nexus-zero-org@example.invalid', '', clock_timestamp(),
+   '{"provider":"email","providers":["email"]}'::jsonb, '{}'::jsonb, clock_timestamp(), clock_timestamp()),
+  ('00000000-0000-0000-0000-000000000000', '10000000-0000-0000-0000-000000000006',
+   'authenticated', 'authenticated', 'nexus-editor-only@example.invalid', '', clock_timestamp(),
    '{"provider":"email","providers":["email"]}'::jsonb, '{}'::jsonb, clock_timestamp(), clock_timestamp());
 
 insert into app_private.bootstrap_owner_allowlist (user_id, allowed_by)
@@ -151,6 +157,28 @@ values
   ('10000000-0000-0000-0000-000000000002', 'local SQL self-test'),
   ('10000000-0000-0000-0000-000000000003', 'local SQL self-test'),
   ('10000000-0000-0000-0000-000000000004', 'local SQL self-test');
+
+-- Dedicated capability actors are immutable fixtures: user 5 has no membership,
+-- user 6 is editor-only, and neither is reused by later bootstrap tests.
+insert into public.organizations (
+  id, name, slug, created_by, updated_by
+) values (
+  '30000000-0000-4000-8000-000000000001', 'Capability Fixture', 'capability-fixture',
+  '10000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001'
+);
+insert into public.organization_memberships (
+  organization_id, user_id, role, created_by, updated_by
+) values
+  (
+    '30000000-0000-4000-8000-000000000001',
+    '10000000-0000-0000-0000-000000000001', 'owner',
+    '10000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001'
+  ),
+  (
+    '30000000-0000-4000-8000-000000000001',
+    '10000000-0000-0000-0000-000000000006', 'editor',
+    '10000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001'
+  );
 
 -- Transaction-local payload builder for task_result boundary tests.
 create function public.nexus_test_task_result_payload(
@@ -1950,11 +1978,15 @@ end;
 $$;
 
 -- Organization creation is capability-gated, atomic, idempotent, and isolated.
-select pg_catalog.set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-000000000003', true);
+-- Do not reuse bootstrap actors here: user 3 owns org3 by this point.
+select pg_catalog.set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-000000000005', true);
 do $$
+declare v_capability jsonb := public.rpc_organization_creation_capability();
 begin
-  if (public.rpc_organization_creation_capability()->>'allowed')::boolean then
-    raise exception 'non-owner unexpectedly received organization creation capability';
+  if (v_capability->>'allowed')::boolean
+     or v_capability->>'activeOwnerCount' <> '0'
+     or v_capability->>'reason' <> 'active_owner_membership_required' then
+    raise exception 'zero-organization user unexpectedly received organization creation capability: %', v_capability;
   end if;
   begin
     perform public.rpc_create_organization(
@@ -1962,7 +1994,28 @@ begin
       '{"version":1,"phases":[{"code":0,"name":"Plan"},{"code":1,"name":"Do"},{"code":2,"name":"Review"}],"departments":[{"id":"planning","name":"Planning","owner":"Unassigned"},{"id":"operations","name":"Operations","owner":"Unassigned"}],"terminology":{"task":"Task","phase":"Phase","department":"Department"}}'::jsonb,
       public.nexus_test_creation_changes(),'20000000-0000-4000-8000-000000000040'
     );
-    raise exception 'non-owner organization creation unexpectedly succeeded';
+    raise exception 'zero-organization user creation unexpectedly succeeded';
+  exception when insufficient_privilege then null;
+  end;
+end;
+$$;
+
+select pg_catalog.set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-000000000006', true);
+do $$
+declare v_capability jsonb := public.rpc_organization_creation_capability();
+begin
+  if (v_capability->>'allowed')::boolean
+     or v_capability->>'activeOwnerCount' <> '0'
+     or v_capability->>'reason' <> 'active_owner_membership_required' then
+    raise exception 'editor-only user unexpectedly received organization creation capability: %', v_capability;
+  end if;
+  begin
+    perform public.rpc_create_organization(
+      'Denied Editor Org','denied-editor-org','Denied project',repeat('purpose ',4),'','nexus-local-v1',
+      '{"version":1,"phases":[{"code":0,"name":"Plan"},{"code":1,"name":"Do"},{"code":2,"name":"Review"}],"departments":[{"id":"planning","name":"Planning","owner":"Unassigned"},{"id":"operations","name":"Operations","owner":"Unassigned"}],"terminology":{"task":"Task","phase":"Phase","department":"Department"}}'::jsonb,
+      public.nexus_test_creation_changes(),'20000000-0000-4000-8000-000000000054'
+    );
+    raise exception 'editor-only user organization creation unexpectedly succeeded';
   exception when insufficient_privilege then null;
   end;
 end;
@@ -1984,8 +2037,11 @@ declare
   v_snapshot jsonb;
   v_before integer;
 begin
-  if not (public.rpc_organization_creation_capability()->>'allowed')::boolean then
-    raise exception 'active owner capability was not returned';
+  v_snapshot := public.rpc_organization_creation_capability();
+  if not (v_snapshot->>'allowed')::boolean
+     or (v_snapshot->>'activeOwnerCount')::integer < 1
+     or v_snapshot->>'reason' <> 'active_owner' then
+    raise exception 'active owner capability was not returned: %', v_snapshot;
   end if;
   v_first := public.rpc_create_organization(
     'Created Org','created-org','Created project',repeat('purpose ',4),'task notes','nexus-local-v1',
