@@ -6,16 +6,20 @@ import {
   RPC,
   type ApplyChangesResponse,
   type CloudEntity,
+  type CreateOrganizationResponse,
   type ImportResponse,
   type Membership,
   type MembershipMutationResponse,
   type OrganizationSummary,
+  type OrganizationCreationCapability,
   type WorkspaceReadResponse,
   type WorkspaceRole,
 } from './contracts'
 import { bundleToEntities, canonicalJson, diffEntities, entitiesToBundle } from './entities'
 import type { PreparedMigrationSource } from './migration'
 import type { Database, Json } from './database.types'
+import type { GeneratedWorkspaceDraft, WorkspaceCreationInput } from '../workspace'
+import type { WorkspaceConfig, WorkspaceProfile } from '../types'
 
 const isRecord=(value:unknown):value is Record<string,unknown>=>!!value&&typeof value==='object'&&!Array.isArray(value)
 const roles=new Set(['owner','editor','viewer']),statuses=new Set(['active','archived']),entityTypes=new Set(['task','task_result','flow_node','flow_edge','flow_viewport','client_audit','kpi','report_baseline','migration_archive','weekly_run','weekly_completion','weekly_tombstone','weekly_meta']),importStatuses=new Set(['empty','imported','populated_without_manifest'])
@@ -29,15 +33,29 @@ function parseOrganization(value:unknown):OrganizationSummary{
 
 function parseRead(value:unknown):WorkspaceReadResponse{
   if(!isRecord(value)||value.schemaVersion!==4||!isRecord(value.organization)||!Array.isArray(value.entities)||!isRecord(value.importState)||!roles.has(String(value.role))||!iso(value.readAt)||!importStatuses.has(String(value.importState.status))||!number(value.importState.manifestCount)||(value.importState.lastManifestAt!==null&&typeof value.importState.lastManifestAt!=='string'))throw new Error('workspace読込応答が不正です')
+  const workspaceProfile=value.workspaceProfile??null,workspaceConfig=value.workspaceConfig??null
+  if(workspaceProfile!==null&&(!isRecord(workspaceProfile)||typeof workspaceProfile.projectName!=='string'||typeof workspaceProfile.purpose!=='string'||typeof workspaceProfile.knownTasks!=='string'||workspaceProfile.generatorVersion!=='nexus-local-v1'||!iso(workspaceProfile.createdAt)))throw new Error('workspace profile応答が不正です')
+  if(workspaceConfig!==null&&(!isRecord(workspaceConfig)||workspaceConfig.version!==1||!Array.isArray(workspaceConfig.phases)||!Array.isArray(workspaceConfig.departments)||!isRecord(workspaceConfig.terminology)))throw new Error('workspace config応答が不正です')
   const organization={...value.organization,role:value.role}
   parseOrganization(organization)
   for(const entity of value.entities){if(!isRecord(entity)||!entityTypes.has(String(entity.entityType))||typeof entity.entityId!=='string'||!number(entity.ordinal)||!number(entity.version)||!isRecord(entity.payload))throw new Error('workspace entity応答が不正です')}
-  return value as unknown as WorkspaceReadResponse
+  return {...value,workspaceProfile,workspaceConfig} as unknown as WorkspaceReadResponse
 }
 
 function parseApply(value:unknown):ApplyChangesResponse{
   if(!isRecord(value)||typeof value.organizationId!=='string'||!number(value.stateVersion)||typeof value.runId!=='string'||typeof value.operation!=='string'||!number(value.changedCount)||typeof value.idempotent!=='boolean'||!iso(value.committedAt))throw new Error('workspace保存応答が不正です')
   return value as unknown as ApplyChangesResponse
+}
+
+function parseCapability(value:unknown):OrganizationCreationCapability{
+  if(!isRecord(value)||typeof value.allowed!=='boolean'||!number(value.activeOwnerCount)||typeof value.reason!=='string')throw new Error('organization作成権限の応答が不正です')
+  return value as unknown as OrganizationCreationCapability
+}
+
+function parseCreate(value:unknown):CreateOrganizationResponse{
+  const applied=parseApply(value)
+  if(!isRecord(value)||typeof value.name!=='string'||typeof value.slug!=='string'||value.status!=='active'||value.role!=='owner')throw new Error('organization作成応答が不正です')
+  return {...applied,name:value.name,slug:value.slug,status:'active',role:'owner'}
 }
 
 function parseImportResponse(value:unknown):ImportResponse{
@@ -57,10 +75,11 @@ function parseMembershipMutation(value:unknown):MembershipMutationResponse{
 }
 
 export class CloudRepositoryError extends Error{
-  constructor(public readonly kind:'offline'|'conflict'|'read_only'|'session_expired'|'access_revoked'|'remote'|'invalid',message:string){super(message);this.name='CloudRepositoryError'}
+  constructor(public readonly kind:'offline'|'conflict'|'slug_conflict'|'read_only'|'session_expired'|'access_revoked'|'remote'|'invalid',message:string){super(message);this.name='CloudRepositoryError'}
 }
+export type CreationProgress='入力内容を確認しています'|'組織を保存しています'|'組織一覧を確認しています'|'初期データを確認しています'|'ブラウザ保存を確認しています'
 
-export interface LoadedWorkspace {organization:OrganizationSummary;entities:CloudEntity[];bundle:ExportBundle|null;importState:WorkspaceReadResponse['importState']}
+export interface LoadedWorkspace {organization:OrganizationSummary;entities:CloudEntity[];bundle:ExportBundle|null;importState:WorkspaceReadResponse['importState'];profile?:WorkspaceProfile|null;config?:WorkspaceConfig|null;cacheWarning?:string;organizationList?:OrganizationSummary[]}
 export interface SaveWorkspaceResult extends LoadedWorkspace {cacheWarning?:string}
 export interface ManageMembershipInput {userId:string;role:WorkspaceRole|null;action:'upsert'|'remove';expectedMembershipVersion:number}
 
@@ -75,6 +94,35 @@ export class SupabaseWorkspaceRepository{
     return data.map(parseOrganization)
   }
 
+  async organizationCreationCapability():Promise<OrganizationCreationCapability>{
+    const {data,error}=await this.client.rpc(RPC.organizationCreationCapability)
+    if(error)throw this.classify(error)
+    return parseCapability(data)
+  }
+
+  async createOrganization(input:WorkspaceCreationInput,draft:GeneratedWorkspaceDraft,runId=crypto.randomUUID(),onProgress?:(progress:CreationProgress)=>void):Promise<LoadedWorkspace>{
+    this.requireOnline()
+    onProgress?.('入力内容を確認しています')
+    const issues=validateBundle(draft.bundle,draft.config);if(issues.length)throw new CloudRepositoryError('invalid',`初期workspaceが不正です: ${issues[0].path} ${issues[0].message}`)
+    const changes=diffEntities([],draft.bundle)
+    onProgress?.('組織を保存しています')
+    const {data,error}=await this.client.rpc(RPC.createOrganization,{p_name:input.organizationName.trim(),p_slug:input.slug,p_project_name:draft.profile.projectName,p_purpose:draft.profile.purpose,p_known_tasks:draft.profile.knownTasks,p_generator_version:draft.profile.generatorVersion,p_workspace_config:draft.config as unknown as Json,p_changes:changes as unknown as Json,p_run_id:runId})
+    if(error)throw this.classify(error)
+    const created=parseCreate(data)
+    if(created.changedCount!==changes.length)throw new CloudRepositoryError('remote','serverの初期変更件数がpreviewと一致しません')
+    onProgress?.('組織一覧を確認しています')
+    const list=await this.listOrganizations(),summary=list.find((item)=>item.id===created.organizationId)
+    if(!summary||summary.role!=='owner'||summary.name!==created.name||summary.slug!==created.slug||summary.stateVersion!==created.stateVersion)throw new CloudRepositoryError('remote','作成後のorganization一覧read-backが一致しません')
+    onProgress?.('初期データを確認しています')
+    const confirmed=await this.read(created.organizationId,false)
+    const profileComparable=confirmed.profile&&{projectName:confirmed.profile.projectName,purpose:confirmed.profile.purpose,knownTasks:confirmed.profile.knownTasks,generatorVersion:confirmed.profile.generatorVersion},expectedProfile={projectName:draft.profile.projectName,purpose:draft.profile.purpose,knownTasks:draft.profile.knownTasks,generatorVersion:draft.profile.generatorVersion}
+    if(!confirmed.bundle||!confirmed.config||!confirmed.profile||confirmed.organization.stateVersion!==created.stateVersion||canonicalJson(bundleToComparable(confirmed.bundle))!==canonicalJson(bundleToComparable(draft.bundle))||canonicalJson(confirmed.config)!==canonicalJson(draft.config)||canonicalJson(profileComparable)!==canonicalJson(expectedProfile))throw new CloudRepositoryError('conflict','作成後のserver snapshotがpreviewと一致しません')
+    onProgress?.('ブラウザ保存を確認しています')
+    this.workspaces.set(created.organizationId,confirmed)
+    const cached=writeCloudCache(created.organizationId,created.stateVersion,confirmed.bundle,confirmed.config)
+    return{...confirmed,organizationList:list,...(!cached.ok?{cacheWarning:`組織は作成済みですがブラウザcacheを更新できません: ${cached.error??'不明なエラー'}`}:{})}
+  }
+
   async listMemberships(organizationId:string):Promise<Membership[]>{
     const {data,error}=await this.client.rpc(RPC.listMemberships,{p_organization_id:organizationId})
     if(error)throw this.classify(error)
@@ -82,11 +130,27 @@ export class SupabaseWorkspaceRepository{
     return data.map(parseMembership)
   }
 
+  async updateWorkspaceSettings(organizationId:string,profile:WorkspaceProfile,config:WorkspaceConfig):Promise<SaveWorkspaceResult>{
+    const current=this.current(organizationId)
+    if(current.organization.role!=='owner')throw new CloudRepositoryError('read_only','組織設定はownerだけが変更できます')
+    if(!current.bundle)throw new CloudRepositoryError('invalid','workspace dataを先に読み込んでください')
+    this.requireOnline()
+    const at=new Date().toISOString(),tasks=current.bundle.tasks.map((task)=>{const department=config.departments.find((item)=>item.id===task.teamId);return department&&(task.team!==department.name||task.rawTeam!==department.name)?{...task,team:department.name,rawTeam:department.name,updatedAt:at}:task}),nodes=current.bundle.flow.nodes.map((node)=>{const phase=config.phases.find((item)=>node.id===`phase-${item.code}`);return phase&&node.data.label!==phase.name?{...node,data:{...node.data,label:phase.name}}:node}),candidate:ExportBundle={...current.bundle,exportedAt:at,tasks,flow:{...current.bundle.flow,nodes},workspaceProfile:profile,workspaceConfig:config,audit:[{id:`workspace-settings-${crypto.randomUUID()}`,issueId:'OP-WORKSPACE-SETTINGS',classification:'persistence',targetVersion:'0.5.0',files:['workspace profile/config'],before:'保存済み組織設定',after:'owner確認済み組織設定',evidence:['rpc_update_workspace_settings'],retest:'server read-back一致確認',residualRisk:'表示名変更は既存タスクへ同期し、個別責任者は保持',round:3,at,action:'組織設定更新',detail:`${profile.projectName} / ${config.phases.length} phases / ${config.departments.length} departments`},...current.bundle.audit]}
+    const issues=validateBundle(candidate,config);if(issues.length)throw new CloudRepositoryError('invalid',`組織設定が不正です: ${issues[0].path} ${issues[0].message}`)
+    const changes=diffEntities(current.entities,candidate),runId=crypto.randomUUID(),{data,error}=await this.client.rpc(RPC.updateWorkspaceSettings,{p_organization_id:organizationId,p_expected_state_version:current.organization.stateVersion,p_workspace_profile:profile as unknown as Json,p_workspace_config:config as unknown as Json,p_changes:changes as unknown as Json,p_run_id:runId})
+    if(error)throw this.classify(error)
+    const applied=parseApply(data);if(applied.changedCount!==changes.length)throw new CloudRepositoryError('remote','serverの設定変更件数が要求と一致しません')
+    const confirmed=await this.read(organizationId,false),profileComparable=confirmed.profile&&{projectName:confirmed.profile.projectName,purpose:confirmed.profile.purpose,knownTasks:confirmed.profile.knownTasks,generatorVersion:confirmed.profile.generatorVersion,createdAt:confirmed.profile.createdAt}
+    if(!confirmed.bundle||!confirmed.config||!confirmed.profile||confirmed.organization.stateVersion!==applied.stateVersion||canonicalJson(bundleToComparable(confirmed.bundle))!==canonicalJson(bundleToComparable(candidate))||canonicalJson(confirmed.config)!==canonicalJson(config)||canonicalJson(profileComparable)!==canonicalJson(profile))throw new CloudRepositoryError('conflict','設定保存後のserver read-backが一致しません')
+    this.workspaces.set(organizationId,confirmed);const cached=writeCloudCache(organizationId,confirmed.organization.stateVersion,confirmed.bundle,confirmed.config);return cached.ok?confirmed:{...confirmed,cacheWarning:cached.error??'組織設定は保存済みですがbrowser cacheを更新できませんでした'}
+  }
+
   async read(organizationId:string,remember=true):Promise<LoadedWorkspace>{
     const {data,error}=await this.client.rpc(RPC.readWorkspace,{p_organization_id:organizationId})
     if(error)throw this.classify(error)
-    const response=parseRead(data),organization={...response.organization,role:response.role},bundle=response.entities.length?entitiesToBundle(response.entities,response.readAt):null
-    const loaded={organization,entities:response.entities,bundle,importState:response.importState};if(remember)this.workspaces.set(organizationId,loaded);return loaded
+    const response=parseRead(data),organization={...response.organization,role:response.role},rawBundle=response.entities.length?entitiesToBundle(response.entities,response.readAt,response.workspaceConfig??undefined):null,bundle=rawBundle?{...rawBundle,...(response.workspaceProfile?{workspaceProfile:response.workspaceProfile}:{}),...(response.workspaceConfig?{workspaceConfig:response.workspaceConfig}:{})}:null
+    if(bundle){const issues=validateBundle(bundle,response.workspaceConfig??undefined);if(issues.length)throw new CloudRepositoryError('invalid',`workspace snapshotが不正です: ${issues[0].path} ${issues[0].message}`)}
+    const loaded={organization,entities:response.entities,bundle,importState:response.importState,profile:response.workspaceProfile,config:response.workspaceConfig};if(remember)this.workspaces.set(organizationId,loaded);return loaded
   }
 
   adopt(workspace:LoadedWorkspace){this.workspaces.set(workspace.organization.id,workspace)}
@@ -95,7 +159,7 @@ export class SupabaseWorkspaceRepository{
   async save(candidate:ExportBundle,organizationId:string,operation:'changes'|'weekly'='changes'):Promise<SaveWorkspaceResult>{
     const current=this.current(organizationId)
     if(current.organization.role==='viewer')throw new CloudRepositoryError('read_only','viewerは共有データを変更できません')
-    const issues=validateBundle(candidate);if(issues.length)throw new CloudRepositoryError('invalid',`保存候補が不正です: ${issues[0].path} ${issues[0].message}`)
+    const issues=validateBundle(candidate,current.config??undefined);if(issues.length)throw new CloudRepositoryError('invalid',`保存候補が不正です: ${issues[0].path} ${issues[0].message}`)
     const changes=diffEntities(current.entities,candidate)
     if(!changes.length)return current as SaveWorkspaceResult
     this.requireOnline()
@@ -142,7 +206,7 @@ export class SupabaseWorkspaceRepository{
     if(confirmed.organization.stateVersion!==expectedStateVersion)throw new CloudRepositoryError('conflict','保存後のserver state versionが保存結果と一致しません。最新版を確認してください')
     if(!confirmed.bundle||canonicalJson(bundleToComparable(confirmed.bundle))!==canonicalJson(bundleToComparable(candidate)))throw new CloudRepositoryError('conflict','保存後のserver read-backが候補と一致しません。最新版を確認してください')
     this.workspaces.set(organizationId,confirmed)
-    const cached=writeCloudCache(organizationId,confirmed.organization.stateVersion,confirmed.bundle)
+    const cached=writeCloudCache(organizationId,confirmed.organization.stateVersion,confirmed.bundle,confirmed.config)
     return cached.ok?confirmed:{...confirmed,cacheWarning:cached.error??'検証済みcloud cacheを更新できませんでした'}
   }
 
@@ -150,10 +214,12 @@ export class SupabaseWorkspaceRepository{
     const message=error.message||'Supabase request failed',normalized=message.toLowerCase()
     if(!navigator.onLine||normalized.includes('failed to fetch')||normalized.includes('network'))return new CloudRepositoryError('offline','通信できません。ネットワークを確認してください')
     if(error.status===401||error.code==='PGRST301'||normalized.includes('jwt')&&normalized.includes('expired'))return new CloudRepositoryError('session_expired','セッションの有効期限が切れました。再ログインしてください')
-    if(error.status===409||error.code==='40001'||normalized.includes('conflict')||normalized.includes('version'))return new CloudRepositoryError('conflict','別の利用者の更新と競合しました。最新版を再読込してください')
+    if(error.code==='23505'&&(normalized.includes('slug')||normalized.includes('organizations_slug')))return new CloudRepositoryError('slug_conflict','識別子が既に使われています')
+    if(error.status===409||error.code==='40001'||error.code==='23505'||normalized.includes('conflict')||normalized.includes('version')||normalized.includes('already exists'))return new CloudRepositoryError('conflict','別の利用者の更新と競合しました。最新版を確認してください')
     if(error.status===403||error.code==='42501'||error.code==='P0002'||normalized.includes('membership')||normalized.includes('organization access'))return new CloudRepositoryError('access_revoked','organizationへのアクセス権がありません。workspaceを閉じました')
     if(normalized.includes('viewer')||normalized.includes('read-only'))return new CloudRepositoryError('read_only','viewerはこの変更を実行できません')
-    return new CloudRepositoryError('remote',message)
+    if((error.status??0)>=500)return new CloudRepositoryError('remote','serverで一時的な問題が発生しました。入力内容を保持したまま再試行できます')
+    return new CloudRepositoryError('remote','serverへの要求を完了できませんでした。入力内容を確認して再試行してください')
   }
 }
 

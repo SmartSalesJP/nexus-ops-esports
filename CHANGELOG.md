@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-08-26 — Organization作成
+
+- active organizationのownerに限定した新規organization作成フローを追加。
+- 外部AIを使わないversion付き決定論generatorと、編集可能な2段階previewを追加。
+- organization、creator owner membership、workspace profile/config、初期entity、監査、actor/run冪等記録を単一transactionで保存。
+- previewでtaskの責任者・期限・優先度を修正し、5〜20件の範囲で追加・削除できるようにした。Phase変更時はtask IDと依存・flow・result参照を衝突なく一括更新する。
+- 作成後の先頭task表示と、owner限定のworkspace profile/config編集を実動作として追加。server read-back成功後のlocal cache失敗は非致命warningとして扱う。
+- custom taskのPhase変更はC系ID、依存、flow、成果、報告基準、週次provenance/fingerprint/tombstoneを一括再採番する。設定変更ではtask固有の責任者を保持し、全mutation RPCのtransaction末尾でworkspace configとentity graphの整合を検証する。
+- 既存organizationは従来の7 Phase・13チーム・73正本タスクを維持し、新規organizationだけ可変表示名・採用部門・初期タスクを使用。
+
 ## 2026-08-24 — 実行順クエストビュー
 
 - 全担当者の#1を一覧する概要と、担当者別の「今やる」「次にやる」「解除待ち」「完了ログ」を追加。従来のTaskBoardは「全タスク」で維持。

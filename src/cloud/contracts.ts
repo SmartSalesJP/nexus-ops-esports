@@ -1,4 +1,7 @@
 export const RPC={
+  organizationCreationCapability:'rpc_organization_creation_capability',
+  createOrganization:'rpc_create_organization',
+  updateWorkspaceSettings:'rpc_update_workspace_settings',
   listOrganizations:'rpc_list_my_organizations',
   listMemberships:'rpc_list_memberships',
   readWorkspace:'rpc_read_snapshot',
@@ -35,8 +38,13 @@ export interface WorkspaceReadResponse {
   role:WorkspaceRole
   entities:CloudEntity[]
   importState:{status:'empty'|'imported'|'populated_without_manifest';manifestCount:number;lastManifestAt:string|null}
+  workspaceProfile:import('../types').WorkspaceProfile|null
+  workspaceConfig:import('../types').WorkspaceConfig|null
   readAt:string
 }
+
+export interface OrganizationCreationCapability { allowed:boolean;activeOwnerCount:number;reason:string }
+export interface CreateOrganizationResponse extends ApplyChangesResponse {name:string;slug:string;status:WorkspaceStatus;role:'owner'}
 
 export interface EntityChange {
   entityType:EntityType

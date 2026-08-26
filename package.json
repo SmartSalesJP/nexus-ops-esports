@@ -12,6 +12,9 @@
     "test": "vitest run",
     "test:ui": "vitest run src/components --reporter=verbose",
     "test:a11y": "vitest run src/a11y.test.tsx --reporter=verbose",
+    "test:organization": "vitest run src/workspace.test.ts src/components/CreateOrganizationDialog.test.tsx src/cloud/repository.test.ts --reporter=verbose",
+    "test:migration-order": "node scripts/verify-organization-migrations.mjs",
+    "test:db": "supabase test db --local supabase/tests/rls.sql",
     "test:e2e": "playwright test",
     "verify:pages": "node scripts/verify-pages-build.mjs"
   },

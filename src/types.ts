@@ -22,7 +22,7 @@ export const people = ['鈴木', 'ユウタ', 'ウメノ', 'ロブ', '浜名', '
 export const sourceConfidences = ['high', 'medium', 'low'] as const
 export const departmentIds=organizationUnits.map((unit)=>unit.id)
 export type DepartmentId = typeof organizationUnits[number]['id']
-export type Department = typeof organizationUnits[number]['name']
+export type Department = string
 export type Status = typeof statuses[number]
 export type Urgency = typeof urgencies[number]
 export type SourceConfidence = typeof sourceConfidences[number]
@@ -106,7 +106,12 @@ export interface WeeklyRun {
   snapshot:WeeklySnapshot
 }
 export interface WeeklyState { lastRun:WeeklyRun|null; runs:WeeklyRun[]; completions:Record<string,CompletionHistory>; tombstones:string[] }
-export interface ExportBundle { schemaVersion:4; exportedAt:string; tasks:Task[]; taskResults?:TaskResultSheet[]; flow:FlowData; audit:AuditItem[]; kpis:KpiValue[]; reportBaseline:ReportSnapshot|null; migrationArchive:MigrationArchive[]; weekly:WeeklyState }
+export interface ExportBundle { schemaVersion:4; exportedAt:string; tasks:Task[]; taskResults?:TaskResultSheet[]; flow:FlowData; audit:AuditItem[]; kpis:KpiValue[]; reportBaseline:ReportSnapshot|null; migrationArchive:MigrationArchive[]; weekly:WeeklyState; workspaceProfile?:WorkspaceProfile; workspaceConfig?:WorkspaceConfig }
+export interface WorkspaceProfile { projectName:string; purpose:string; knownTasks:string; generatorVersion:string; createdAt:string }
+export interface WorkspacePhase { code:0|1|2|3|4|5|6; name:string }
+export interface WorkspaceDepartment { id:DepartmentId; name:string; owner:string }
+export interface WorkspaceTerminology { task:string; phase:string; department:string }
+export interface WorkspaceConfig { version:1; phases:WorkspacePhase[]; departments:WorkspaceDepartment[]; terminology:WorkspaceTerminology }
 export interface ValidationIssue { path:string; message:string }
 export interface LoadResult<T> { ok:boolean; value:T; error?:string; raw?:string }
 

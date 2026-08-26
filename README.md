@@ -8,6 +8,14 @@ Supabase共有版の設定、Auth callback、クラウド保存・競合・未�
 
 ## 起動と検証
 
+新規organization機能のfocused testは `pnpm test:organization`、ローカルSupabaseのRLS/RPC testは `pnpm test:db` で実行します。
+
+## 新しいorganization
+
+共有版では、active organizationのownerだけがorganization selector横の「新しい組織」から追加できます。入力した目的と既知タスクは外部AIへ送らず、`nexus-local-v1` generatorがpreviewを作成します。Phase名、部門名、初期タスクの名称・割当・責任者・期限・優先度・Phaseを確認し、taskを5〜20件の範囲で追加・削除してから作成してください。
+
+作成処理はorganization、owner membership、workspace profile/config、5〜20件の初期taskと関連entity、監査、actor/run IDの冪等記録を1回のPostgreSQL transactionで保存します。一覧とsnapshotのread-backがpreviewと一致するまで画面は新しいorganizationへ切り替わりません。作成後は先頭taskを開くか、同じworkspace profile/configをowner権限で編集できます。server正本を確認した後のlocal cache書込み失敗は作成を取り消さずwarningにします。既存organizationにはworkspace configを後付けせず、従来の73件をlegacy presetとしてそのまま表示します。
+
 Node.js 22以上、pnpm 11.19.0を使用します。
 
 ```bash

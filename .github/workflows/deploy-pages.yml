@@ -56,6 +56,9 @@ jobs:
       - name: Audit production dependencies
         run: pnpm audit --audit-level=moderate
 
+      - name: Verify organization migration ordering
+        run: pnpm test:migration-order
+
       - name: Lint, typecheck, and unit tests
         run: |
           pnpm lint
