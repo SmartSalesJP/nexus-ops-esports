@@ -289,6 +289,38 @@ $$;
 revoke all on function public.nexus_test_creation_changes() from public, anon, authenticated, service_role;
 grant execute on function public.nexus_test_creation_changes() to authenticated;
 
+-- Test-only privileged readback. It is created and rolled back with this file;
+-- production API roles never receive table access to app_private.
+create function public.nexus_test_creation_state(p_actor uuid, p_run uuid, p_slug text)
+returns jsonb
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select jsonb_build_object(
+    'organizations',(select count(*) from public.organizations),
+    'memberships',(select count(*) from public.organization_memberships),
+    'profiles',(select count(*) from app_private.workspace_profiles),
+    'configs',(select count(*) from app_private.workspace_configs),
+    'requests',(select count(*) from app_private.organization_creation_requests),
+    'entities',(select count(*) from public.entity_records),
+    'links',(select count(*) from public.entity_record_links),
+    'runs',(select count(*) from public.mutation_runs),
+    'audit',(select count(*) from public.server_audit_events),
+    'slugExists',exists(select 1 from public.organizations where slug=p_slug),
+    'requestExists',exists(
+      select 1 from app_private.organization_creation_requests
+      where actor_user_id=p_actor and run_id=p_run
+    ),
+    'runExists',exists(select 1 from public.mutation_runs where run_id=p_run),
+    'auditExists',exists(select 1 from public.server_audit_events where run_id=p_run)
+  )
+$$;
+revoke all on function public.nexus_test_creation_state(uuid,uuid,text)
+  from public, anon, authenticated, service_role;
+grant execute on function public.nexus_test_creation_state(uuid,uuid,text) to authenticated;
+
 set local role authenticated;
 select pg_catalog.set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-000000000001', true);
 select pg_catalog.set_config(
@@ -2034,6 +2066,11 @@ declare
   v_settings_changes jsonb;
   v_profile jsonb;
   v_settings_run constant uuid := '20000000-0000-4000-8000-000000000046';
+  v_late_run constant uuid := '20000000-0000-4000-8000-000000000044';
+  v_late_counts jsonb;
+  v_late_after jsonb;
+  v_expected_constraint text;
+  v_failed_constraint text;
   v_snapshot jsonb;
   v_before integer;
 begin
@@ -2237,20 +2274,36 @@ begin
   -- This passes the creation envelope and fails late while relational links are
   -- inserted, proving the preceding organization/profile/entity writes rollback.
   v_bad_changes := jsonb_set(
-    jsonb_set(v_changes, '{8,payload,target}', '"missing-node"'::jsonb),
-    '{8,references,1,entityId}', '"missing-node"'::jsonb
+    v_changes,
+    '{13,references}',
+    jsonb_build_array(jsonb_build_object(
+      'kind','late_failure','entityType','task','entityId','missing-task'
+    ))
   );
+  select c.conname into strict v_expected_constraint
+  from pg_catalog.pg_constraint as c
+  where c.conrelid = 'public.entity_record_links'::regclass
+    and c.contype = 'f'
+    and pg_catalog.pg_get_constraintdef(c.oid)
+      like 'FOREIGN KEY (organization_id, to_entity_type, to_entity_id)%';
+  v_late_counts := public.nexus_test_creation_state(auth.uid(),v_late_run,'late-failure');
   begin
     perform public.rpc_create_organization(
       'Late Failure','late-failure','Created project',repeat('purpose ',4),'task notes','nexus-local-v1',
-      v_config,v_bad_changes,'20000000-0000-4000-8000-000000000044'
+      v_config,v_bad_changes,v_late_run
     );
     raise exception 'late cross-reference failure unexpectedly succeeded';
-  exception when foreign_key_violation then null;
+  exception when foreign_key_violation then
+    get stacked diagnostics v_failed_constraint = constraint_name;
+    if v_failed_constraint is distinct from v_expected_constraint then
+      raise exception 'late failure hit wrong FK constraint: expected %, got %',
+        v_expected_constraint, v_failed_constraint;
+    end if;
   end;
-  if (select count(*) from public.organizations) <> v_before
-     or exists (select 1 from public.organizations where slug = 'late-failure') then
-    raise exception 'late create failure was not atomic';
+  v_late_after := public.nexus_test_creation_state(auth.uid(),v_late_run,'late-failure');
+  if v_late_after <> v_late_counts then
+    raise exception 'late create failure was not atomic: before %, after %',
+      v_late_counts, v_late_after;
   end if;
 end;
 $$;
