@@ -45,6 +45,36 @@ const settingsRpc=hardening.indexOf('create function public.rpc_update_workspace
 const createGrant=hardening.lastIndexOf(`${finalCreateGrant};`)
 if(!(executor>=0&&guard>executor&&settingsRpc>guard&&createGrant>settingsRpc))
   fail('strict shared guard, owner settings RPC, and create grant are out of order')
+const executorEnd=hardening.indexOf('\n$$;',executor)
+const executorBody=hardening.slice(executor,executorEnd)
+const settingsEnd=hardening.indexOf('\n$$;',settingsRpc)
+const settingsBody=hardening.slice(settingsRpc,settingsEnd)
+const settingsLock=settingsBody.indexOf('for update;')
+const ownerRecheck=settingsBody.indexOf(
+  "if app_private.membership_role(p_organization_id,v_actor) is distinct from 'owner' then",
+  settingsLock+1,
+)
+const settingsRunLookup=settingsBody.indexOf('select run.* into v_existing_run',ownerRecheck+1)
+if(!(settingsLock>=0&&ownerRecheck>settingsLock&&settingsRunLookup>ownerRecheck))
+  fail('settings RPC must recheck owner after its organization lock and before run replay')
+const versionGuard="app_private.is_valid_nonnegative_bigint_text"
+if(!executorBody.includes(versionGuard)||!settingsBody.includes(versionGuard))
+  fail('both the shared executor and settings wrapper must validate versions before bigint casts')
+const helper=hardening.indexOf('create function app_private.is_valid_nonnegative_bigint_text(')
+const helperEnd=hardening.indexOf('\n$$;',helper)
+const helperBody=hardening.slice(helper,helperEnd)
+if(!(helper>=0&&helper<executor
+  &&helperBody.includes("between 1 and 19")
+  &&helperBody.includes("p_value ~ '^[0-9]+$'")
+  &&helperBody.includes("p_value <= '9223372036854775807'")))
+  fail('expectedVersion helper must reject non-digits, overlong values, and values above bigint max')
+const executorVersionGuard=executorBody.indexOf(versionGuard)
+const executorVersionCast=executorBody.indexOf("(c.value->>'expectedVersion')::bigint")
+const settingsVersionGuard=settingsBody.indexOf(versionGuard)
+const settingsFirstWrite=settingsBody.indexOf('update app_private.workspace_profiles')
+if(!(executorVersionGuard>=0&&executorVersionCast>executorVersionGuard
+  &&settingsVersionGuard>=0&&settingsFirstWrite>settingsVersionGuard))
+  fail('expectedVersion validation must precede executor casts and settings writes')
 const statements=hardening.split(';').map(normalize).filter(Boolean)
 if(statements.at(-1)!==normalize(finalCreateGrant))
   fail('authenticated create grant must be the final migration statement')

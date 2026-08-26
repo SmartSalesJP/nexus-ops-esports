@@ -11,11 +11,11 @@ declare
   v_department_count integer;
 begin
   if p_profile is null or jsonb_typeof(p_profile) <> 'object'
-     or jsonb_typeof(p_profile->'projectName') <> 'string'
-     or jsonb_typeof(p_profile->'purpose') <> 'string'
-     or jsonb_typeof(p_profile->'knownTasks') <> 'string'
-     or jsonb_typeof(p_profile->'generatorVersion') <> 'string'
-     or jsonb_typeof(p_profile->'createdAt') <> 'string'
+     or jsonb_typeof(p_profile->'projectName') is distinct from 'string'
+     or jsonb_typeof(p_profile->'purpose') is distinct from 'string'
+     or jsonb_typeof(p_profile->'knownTasks') is distinct from 'string'
+     or jsonb_typeof(p_profile->'generatorVersion') is distinct from 'string'
+     or jsonb_typeof(p_profile->'createdAt') is distinct from 'string'
      or char_length(btrim(p_profile->>'projectName')) not between 1 and 120
      or char_length(btrim(p_profile->>'purpose')) not between 20 and 4000
      or char_length(p_profile->>'knownTasks') > 8000
@@ -23,11 +23,11 @@ begin
     return false;
   end if;
   if p_config is null or jsonb_typeof(p_config) <> 'object'
-     or jsonb_typeof(p_config->'version') <> 'number'
+     or jsonb_typeof(p_config->'version') is distinct from 'number'
      or p_config->>'version' <> '1'
-     or jsonb_typeof(p_config->'phases') <> 'array'
-     or jsonb_typeof(p_config->'departments') <> 'array'
-     or jsonb_typeof(p_config->'terminology') <> 'object' then
+     or jsonb_typeof(p_config->'phases') is distinct from 'array'
+     or jsonb_typeof(p_config->'departments') is distinct from 'array'
+     or jsonb_typeof(p_config->'terminology') is distinct from 'object' then
     return false;
   end if;
   v_phase_count := jsonb_array_length(p_config->'phases');
@@ -35,10 +35,10 @@ begin
   if v_phase_count not between 3 and 7 or v_department_count not between 2 and 12
      or exists (
        select 1 from jsonb_array_elements(p_config->'phases') phase(value)
-       where jsonb_typeof(phase.value) <> 'object'
-          or jsonb_typeof(phase.value->'code') <> 'number'
+       where jsonb_typeof(phase.value) is distinct from 'object'
+          or jsonb_typeof(phase.value->'code') is distinct from 'number'
           or phase.value->>'code' !~ '^[0-6]$'
-          or jsonb_typeof(phase.value->'name') <> 'string'
+          or jsonb_typeof(phase.value->'name') is distinct from 'string'
           or char_length(btrim(phase.value->>'name')) not between 1 and 120
      )
      or (select count(distinct (phase.value->>'code')::integer) from jsonb_array_elements(p_config->'phases') phase(value)) <> v_phase_count
@@ -47,9 +47,9 @@ begin
      or (select count(distinct lower(btrim(phase.value->>'name'))) from jsonb_array_elements(p_config->'phases') phase(value)) <> v_phase_count
      or exists (
        select 1 from jsonb_array_elements(p_config->'departments') department(value)
-       where jsonb_typeof(department.value) <> 'object'
-          or jsonb_typeof(department.value->'id') <> 'string'
-          or jsonb_typeof(department.value->'name') <> 'string'
+       where jsonb_typeof(department.value) is distinct from 'object'
+          or jsonb_typeof(department.value->'id') is distinct from 'string'
+          or jsonb_typeof(department.value->'name') is distinct from 'string'
           or coalesce(jsonb_typeof(department.value->'owner'),'null') <> 'string'
           or department.value->>'id' not in ('ops-hq','operations','planning','tournament-admin','casting-relations','sales','partnerships','pr-marketing','broadcast','creative','community','education','administration')
           or char_length(btrim(department.value->>'name')) not between 1 and 120
@@ -58,9 +58,9 @@ begin
      )
      or (select count(distinct department.value->>'id') from jsonb_array_elements(p_config->'departments') department(value)) <> v_department_count
      or (select count(distinct lower(btrim(department.value->>'name'))) from jsonb_array_elements(p_config->'departments') department(value)) <> v_department_count
-     or jsonb_typeof(p_config->'terminology'->'task') <> 'string'
-     or jsonb_typeof(p_config->'terminology'->'phase') <> 'string'
-     or jsonb_typeof(p_config->'terminology'->'department') <> 'string'
+     or jsonb_typeof(p_config->'terminology'->'task') is distinct from 'string'
+     or jsonb_typeof(p_config->'terminology'->'phase') is distinct from 'string'
+     or jsonb_typeof(p_config->'terminology'->'department') is distinct from 'string'
      or char_length(btrim(p_config->'terminology'->>'task')) not between 1 and 20
      or char_length(btrim(p_config->'terminology'->>'phase')) not between 1 and 20
      or char_length(btrim(p_config->'terminology'->>'department')) not between 1 and 20 then
@@ -234,6 +234,26 @@ $$;
 
 revoke all on function app_private.workspace_entities_match_config(uuid,jsonb) from public, anon, authenticated, service_role;
 
+-- Validate optimistic-lock versions without casting attacker-controlled text.
+-- A bigint cast is safe only after this helper returns true.
+create function app_private.is_valid_nonnegative_bigint_text(p_value text)
+returns boolean
+language sql
+immutable
+strict
+set search_path = ''
+as $$
+  select pg_catalog.char_length(p_value) between 1 and 19
+    and p_value ~ '^[0-9]+$'
+    and (
+      pg_catalog.char_length(p_value) < 19
+      or p_value <= '9223372036854775807'
+    )
+$$;
+
+revoke all on function app_private.is_valid_nonnegative_bigint_text(text)
+  from public, anon, authenticated, service_role;
+
 -- Replace the shared mutation executor in place so every write route keeps the
 -- existing validation, optimistic locking, links, audit, and idempotency logic,
 -- then validates custom workspace semantics before the transaction can commit.
@@ -326,9 +346,7 @@ begin
          'weekly_tombstone', 'weekly_meta', 'task_result'
        )
        or char_length(coalesce(c.value->>'entityId', '')) not between 1 and 256
-       or (c.value->>'expectedVersion') is null
-       or (c.value->>'expectedVersion') !~ '^[0-9]+$'
-       or ((c.value->>'expectedVersion')::bigint < 0)
+       or app_private.is_valid_nonnegative_bigint_text(c.value->>'expectedVersion') is not true
        or (c.value->>'op' = 'upsert' and jsonb_typeof(c.value->'payload') <> 'object')
        or (c.value->>'op' = 'delete' and c.value ? 'payload')
        or (c.value ? 'references' and jsonb_typeof(c.value->'references') <> 'array')
@@ -847,16 +865,85 @@ set search_path = ''
 as $$
 declare
   v_actor uuid := auth.uid();
+  v_state_version bigint;
+  v_existing_run public.mutation_runs%rowtype;
+  v_request jsonb;
   v_result jsonb;
 begin
   if v_actor is null then
     raise exception using errcode = '42501', message = 'authentication required';
   end if;
-  if app_private.membership_role(p_organization_id,v_actor) <> 'owner' then
+  if app_private.membership_role(p_organization_id,v_actor) is distinct from 'owner' then
     raise exception using errcode = '42501', message = 'owner membership required';
   end if;
-  if not app_private.workspace_settings_valid(p_workspace_profile,p_workspace_config) then
+  if p_run_id is null or p_expected_state_version is null or p_expected_state_version < 0 then
+    raise exception using errcode = '22023', message = 'invalid settings run or state version';
+  end if;
+  if app_private.workspace_settings_valid(p_workspace_profile,p_workspace_config) is not true then
     raise exception using errcode = '22023', message = 'invalid workspace profile or config';
+  end if;
+  if p_changes is null or jsonb_typeof(p_changes) is distinct from 'array' then
+    raise exception using errcode = '22023', message = 'settings changes must be an array';
+  end if;
+  if jsonb_array_length(p_changes) not between 1 and 10000
+     or pg_column_size(p_changes) > 16777216 then
+    raise exception using errcode = '22023', message = 'settings changes are empty or exceed limits';
+  end if;
+  if exists (
+    select 1 from jsonb_array_elements(p_changes) as change(value)
+    where jsonb_typeof(change.value) is distinct from 'object'
+       or coalesce(change.value->>'op','') not in ('upsert','delete')
+       or coalesce(change.value->>'entityType','') not in (
+         'task','flow_node','flow_edge','flow_viewport','client_audit','kpi',
+         'report_baseline','migration_archive','weekly_run','weekly_completion',
+         'weekly_tombstone','weekly_meta','task_result'
+       )
+       or char_length(coalesce(change.value->>'entityId','')) not between 1 and 256
+       or app_private.is_valid_nonnegative_bigint_text(change.value->>'expectedVersion') is not true
+       or (change.value->>'op'='upsert' and jsonb_typeof(change.value->'payload') is distinct from 'object')
+       or (change.value->>'op'='delete' and change.value ? 'payload')
+       or (change.value ? 'references' and jsonb_typeof(change.value->'references') is distinct from 'array')
+       or (jsonb_typeof(change.value->'references')='array' and jsonb_array_length(change.value->'references') > 2048)
+  ) then
+    raise exception using errcode = '22023', message = 'one or more settings changes are malformed';
+  end if;
+  v_request := jsonb_build_object(
+    'operation','workspace_settings_update','profile',p_workspace_profile,
+    'config',p_workspace_config,'changes',p_changes
+  );
+  select organization.state_version into v_state_version
+  from public.organizations as organization
+  where organization.id=p_organization_id and organization.status='active'
+  for update;
+  if not found then
+    raise exception using errcode='P0002',message='active organization not found';
+  end if;
+  -- Membership mutations serialize on this same organization row. Recheck
+  -- after acquiring it so a waiting request cannot replay after losing owner.
+  if app_private.membership_role(p_organization_id,v_actor) is distinct from 'owner' then
+    raise exception using errcode='42501',message='owner membership changed while waiting for organization lock';
+  end if;
+  select run.* into v_existing_run
+  from public.mutation_runs as run
+  where run.organization_id=p_organization_id and run.run_id=p_run_id;
+  if found then
+    if v_existing_run.operation <> 'apply_changes'
+       or v_existing_run.request_payload <> v_request then
+      raise exception using errcode='22023',message='run id was already used with a different request';
+    end if;
+    return v_existing_run.result || jsonb_build_object('idempotent',true);
+  end if;
+  if v_state_version <> p_expected_state_version then
+    raise exception using errcode='40001',message=format(
+      'state version conflict: expected %s, actual %s',p_expected_state_version,v_state_version
+    );
+  end if;
+  if not exists (
+    select 1 from app_private.workspace_profiles where organization_id=p_organization_id
+  ) or not exists (
+    select 1 from app_private.workspace_configs where organization_id=p_organization_id
+  ) then
+    raise exception using errcode='P0002',message='workspace settings not found';
   end if;
   update app_private.workspace_profiles
   set project_name=btrim(p_workspace_profile->>'projectName'),
@@ -869,7 +956,7 @@ begin
   if not found then raise exception using errcode='P0002',message='workspace config not found'; end if;
   v_result := app_private.execute_changes(
     p_organization_id,p_expected_state_version,p_changes,p_run_id,'apply_changes','owner',
-    jsonb_build_object('operation','workspace_settings_update','profile',p_workspace_profile,'config',p_workspace_config,'changes',p_changes),
+    v_request,
     jsonb_build_object('operation','workspace_settings_update')
   );
   if not app_private.workspace_entities_match_config(p_organization_id,p_workspace_config) then

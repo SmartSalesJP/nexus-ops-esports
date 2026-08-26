@@ -114,7 +114,8 @@ begin
         'validate_task_result_payload', 'validate_task_result_record',
         'validate_task_result_payload_without_checklist',
         'task_result_has_visible_text',
-        'validate_entity_payload', 'validate_entity_payload_v4_legacy'
+        'validate_entity_payload', 'validate_entity_payload_v4_legacy',
+        'is_valid_nonnegative_bigint_text'
       )
       and (
         pg_catalog.has_function_privilege('anon', p.oid, 'EXECUTE')
@@ -122,7 +123,42 @@ begin
         or pg_catalog.has_function_privilege('service_role', p.oid, 'EXECUTE')
       )
   ) then
-    raise exception 'a task-result validator is executable by an API role';
+    raise exception 'a private validator is executable by an API role';
+  end if;
+end;
+$$;
+
+-- Authority is checked once for fail-fast behavior and again after the
+-- organization row lock. Membership mutation takes that same row lock, so a
+-- settings replay cannot return after the actor loses owner while waiting.
+do $$
+declare
+  v_settings_definition text := pg_catalog.lower(pg_catalog.pg_get_functiondef(
+    'public.rpc_update_workspace_settings(uuid,bigint,jsonb,jsonb,jsonb,uuid)'::regprocedure
+  ));
+  v_membership_definition text := pg_catalog.lower(pg_catalog.pg_get_functiondef(
+    'public.rpc_manage_membership(uuid,uuid,text,text,bigint,bigint,uuid)'::regprocedure
+  ));
+  v_settings_lock integer;
+  v_after_lock text;
+  v_owner_recheck integer;
+  v_run_lookup integer;
+begin
+  if pg_catalog.strpos(v_membership_definition,'for update') = 0 then
+    raise exception 'membership mutation no longer serializes on the organization row';
+  end if;
+  v_settings_lock := pg_catalog.strpos(v_settings_definition,'for update;');
+  if v_settings_lock = 0 then
+    raise exception 'settings update no longer serializes on the organization row';
+  end if;
+  v_after_lock := pg_catalog.substr(v_settings_definition,v_settings_lock);
+  v_owner_recheck := pg_catalog.strpos(
+    v_after_lock,
+    'if app_private.membership_role(p_organization_id,v_actor) is distinct from ''owner'' then'
+  );
+  v_run_lookup := pg_catalog.strpos(v_after_lock,'select run.* into v_existing_run');
+  if v_after_lock is null or v_owner_recheck = 0 or v_run_lookup <= v_owner_recheck then
+    raise exception 'settings owner recheck must follow its lock and precede run replay';
   end if;
 end;
 $$;
@@ -2069,6 +2105,8 @@ declare
   v_late_run constant uuid := '20000000-0000-4000-8000-000000000044';
   v_late_counts jsonb;
   v_late_after jsonb;
+  v_invalid_settings_counts jsonb;
+  v_invalid_settings_after jsonb;
   v_expected_constraint text;
   v_failed_constraint text;
   v_snapshot jsonb;
@@ -2193,15 +2231,52 @@ begin
     raise exception 'unsupported generator unexpectedly succeeded';
   exception when check_violation or invalid_parameter_value then null;
   end;
-  begin
-    perform public.rpc_update_workspace_settings(
-      (v_first->>'organizationId')::uuid,1,
-      jsonb_build_object('projectName',1,'purpose',repeat('purpose ',4),'knownTasks','task notes','generatorVersion','nexus-local-v1','createdAt',clock_timestamp()::text),
-      v_config,v_changes,gen_random_uuid()
-    );
-    raise exception 'numeric profile field unexpectedly succeeded';
-  exception when invalid_parameter_value then null;
-  end;
+  v_snapshot := public.rpc_read_snapshot((v_first->>'organizationId')::uuid);
+  v_invalid_settings_counts := public.nexus_test_creation_state(
+    auth.uid(),'20000000-0000-4000-8000-000000000055','invalid-settings'
+  );
+  for v_bad_changes in select value from jsonb_array_elements(jsonb_build_array(
+    jsonb_build_object('label','empty profile','profile','{}'::jsonb,'config',v_config,'changes',v_changes),
+    jsonb_build_object('label','missing profile field','profile',(v_snapshot->'workspaceProfile')-'purpose','config',v_config,'changes',v_changes),
+    jsonb_build_object('label','wrong profile type','profile',jsonb_set(v_snapshot->'workspaceProfile','{projectName}','1'::jsonb),'config',v_config,'changes',v_changes),
+    jsonb_build_object('label','empty config','profile',v_snapshot->'workspaceProfile','config','{}'::jsonb,'changes',v_changes),
+    jsonb_build_object('label','wrong config type','profile',v_snapshot->'workspaceProfile','config',jsonb_set(v_config,'{terminology,task}','1'::jsonb),'changes',v_changes),
+    jsonb_build_object('label','object changes','profile',v_snapshot->'workspaceProfile','config',v_config,'changes','{}'::jsonb),
+    jsonb_build_object('label','empty changes','profile',v_snapshot->'workspaceProfile','config',v_config,'changes','[]'::jsonb),
+    jsonb_build_object('label','missing change fields','profile',v_snapshot->'workspaceProfile','config',v_config,'changes',jsonb_build_array('{}'::jsonb)),
+    jsonb_build_object(
+      'label','expectedVersion above bigint max','profile',v_snapshot->'workspaceProfile','config',v_config,
+      'changes',jsonb_set(v_changes,'{0,expectedVersion}','9223372036854775808'::jsonb)
+    ),
+    jsonb_build_object(
+      'label','expectedVersion excessively long','profile',v_snapshot->'workspaceProfile','config',v_config,
+      'changes',jsonb_set(v_changes,'{0,expectedVersion}',to_jsonb(repeat('9',200)))
+    )
+  )) loop
+    begin
+      perform public.rpc_update_workspace_settings(
+        (v_first->>'organizationId')::uuid,1,
+        v_bad_changes->'profile',v_bad_changes->'config',v_bad_changes->'changes',gen_random_uuid()
+      );
+      raise exception 'invalid settings case unexpectedly succeeded: %',v_bad_changes->>'label';
+    exception when invalid_parameter_value then null;
+    end;
+  end loop;
+  v_invalid_settings_after := public.nexus_test_creation_state(
+    auth.uid(),'20000000-0000-4000-8000-000000000055','invalid-settings'
+  );
+  if v_invalid_settings_after <> v_invalid_settings_counts
+     or public.rpc_read_snapshot((v_first->>'organizationId')::uuid)->'organization'->>'stateVersion'
+       <> v_snapshot->'organization'->>'stateVersion'
+     or public.rpc_read_snapshot((v_first->>'organizationId')::uuid)->'workspaceProfile'
+       <> v_snapshot->'workspaceProfile'
+     or public.rpc_read_snapshot((v_first->>'organizationId')::uuid)->'workspaceConfig'
+       <> v_snapshot->'workspaceConfig'
+     or public.rpc_read_snapshot((v_first->>'organizationId')::uuid)->'entities'
+       <> v_snapshot->'entities' then
+    raise exception 'invalid settings payload changed state: before %, after %',
+      v_invalid_settings_counts,v_invalid_settings_after;
+  end if;
   begin
     perform public.rpc_update_workspace_settings(
       (v_first->>'organizationId')::uuid,1,
@@ -2320,7 +2395,11 @@ do $$
 declare
   v_org uuid := pg_catalog.current_setting('nexus.test.created_org')::uuid;
   v_snapshot jsonb := public.rpc_read_snapshot(v_org);
+  v_before_snapshot jsonb;
   v_task jsonb;
+  v_bad_version text;
+  v_invalid_version_counts jsonb;
+  v_invalid_version_after jsonb;
 begin
   begin
     perform public.rpc_update_workspace_settings(
@@ -2333,6 +2412,32 @@ begin
   select entity.value->'payload' into v_task
   from jsonb_array_elements(v_snapshot->'entities') as entity(value)
   where entity.value->>'entityType'='task' and entity.value->>'entityId'='C0-01';
+  -- The shared executor must reject numeric text outside bigint before every
+  -- cast and before mutation/audit state is written.
+  v_before_snapshot := v_snapshot;
+  v_invalid_version_counts := public.nexus_test_creation_state(
+    auth.uid(),'20000000-0000-4000-8000-000000000051','invalid-version'
+  );
+  foreach v_bad_version in array array['9223372036854775808',repeat('9',200)] loop
+    begin
+      perform public.rpc_apply_changes(
+        v_org,3,jsonb_build_array(jsonb_build_object(
+          'op','upsert','entityType','task','entityId','C0-01','expectedVersion',v_bad_version::numeric,
+          'payload',v_task,'references','[]'::jsonb
+        )),gen_random_uuid()
+      );
+      raise exception 'out-of-range expectedVersion unexpectedly succeeded: %',v_bad_version;
+    exception when invalid_parameter_value then null;
+    end;
+  end loop;
+  v_invalid_version_after := public.nexus_test_creation_state(
+    auth.uid(),'20000000-0000-4000-8000-000000000051','invalid-version'
+  );
+  if v_invalid_version_after <> v_invalid_version_counts
+     or public.rpc_read_snapshot(v_org) <> v_before_snapshot then
+    raise exception 'out-of-range expectedVersion changed state: before %, after %',
+      v_invalid_version_counts,v_invalid_version_after;
+  end if;
   begin
     perform public.rpc_apply_changes(
       v_org,3,jsonb_build_array(jsonb_build_object(
