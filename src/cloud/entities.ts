@@ -1,5 +1,5 @@
 import { validateBundle } from '../storage'
-import type { ExportBundle } from '../types'
+import type { ExportBundle, WorkspaceConfig } from '../types'
 import type { CloudEntity, EntityChange, EntityType } from './contracts'
 
 const key=(type:EntityType,id:string)=>`${type}\u0000${id}`
@@ -34,7 +34,7 @@ export function bundleToEntities(bundle:ExportBundle):CloudEntity[]{
   return rows
 }
 
-export function entitiesToBundle(entities:CloudEntity[],exportedAt:string):ExportBundle{
+export function entitiesToBundle(entities:CloudEntity[],exportedAt:string,config?:WorkspaceConfig):ExportBundle{
   const duplicates=new Set<string>(),seen=new Set<string>()
   for(const entity of entities){const id=key(entity.entityType,entity.entityId);if(seen.has(id))duplicates.add(id);seen.add(id)}
   if(duplicates.size)throw new Error('クラウドentity IDが重複しています')
@@ -44,7 +44,7 @@ export function entitiesToBundle(entities:CloudEntity[],exportedAt:string):Expor
   const tombstones=ordered<{id:string;fingerprint:unknown}>(entities,'weekly_tombstone').map((value)=>value.fingerprint).filter((value):value is string=>typeof value==='string')
   const completions=Object.fromEntries(entities.filter((entity)=>entity.entityType==='weekly_completion').map((entity)=>[entity.entityId,withoutId(entity.payload as {id:string}&ExportBundle['weekly']['completions'][string])])) as ExportBundle['weekly']['completions']
   const bundle:ExportBundle={schemaVersion:4,exportedAt,tasks:ordered(entities,'task'),taskResults:ordered(entities,'task_result'),flow:{nodes:ordered(entities,'flow_node'),edges:ordered(entities,'flow_edge'),viewport:withoutId(viewportPayload)},audit:ordered(entities,'client_audit'),kpis:ordered(entities,'kpi'),reportBaseline:reportPayload.value,migrationArchive:ordered<{id:string}&ExportBundle['migrationArchive'][number]>(entities,'migration_archive').map(withoutId),weekly:{lastRun,runs,completions,tombstones}}
-  const issues=validateBundle(bundle)
+  const issues=validateBundle(bundle,config)
   if(issues.length)throw new Error(`クラウドデータ検証エラー: ${issues[0].path} ${issues[0].message}`)
   return bundle
 }
