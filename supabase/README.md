@@ -29,6 +29,10 @@ The task-result entity and checklist migrations are applied to the production da
 
 ## Security model
 
+### Browser local-only mode
+
+The configured frontend also offers an unauthenticated “メールなしでこの端末だけで使う” path. It does not call Supabase Auth or create an anonymous Supabase user; it mounts the existing app without cloud controls and persists the mode choice in that browser's `localStorage`. Data remains only in that device and browser profile, is not shared or synchronized, and may be lost when browser/site data is deleted. The persistent banner can return the user to the existing invited-email login flow after any dirty draft is saved or explicitly discarded. Auth callback codes, tokens, and errors take priority over the remembered local choice. This UI mode does not change shared data, grants, RLS, database schema, or Auth configuration.
+
 - `anon` has no table access and cannot execute any NEXUS RPC.
 - `service_role` also has no direct business-table DML or RPC execution grant; administrative bootstrap uses a direct administrator connection/SQL Editor.
 - An authenticated organization member can select that organization's rows through RLS.

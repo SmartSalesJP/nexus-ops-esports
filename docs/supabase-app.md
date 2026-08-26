@@ -26,6 +26,12 @@ VITE_SUPABASE_PUBLISHABLE_KEY=sb_publishable_xxx
 
 未設定のproduction画面は設定不足を表示します。未設定の`vite dev`は既存機能の回帰確認用ローカルモードで動き、共有されないことを上部に表示します。
 
+## メールなしのローカル利用
+
+Supabase設定済みの未ログイン画面でも「メールなしでこの端末だけで使う」を選ぶと、Authへログイン要求を送らず、通常のローカル保存版を開きます。選択は同じブラウザの`localStorage`へ保存されるため、再読込後もローカル利用を継続します。画面上部の「共有ログインへ切り替える」から招待済みメールによる共有編集ログインへ戻せます。未保存の編集がある間は切替を無効にするため、編集中の画面で保存または明示的に破棄してから切り替えてください。Auth callbackのcode、token、エラーがURLにある場合はローカル選択よりcallback処理を優先します。
+
+ローカルデータは、その端末のそのブラウザプロファイル内だけに保存されます。別端末・別ブラウザとは共有も同期もされません。ブラウザのサイトデータ、ストレージ、プロファイルを削除すると失う可能性があるため、必要なデータはJSONで書き出して保管してください。ローカル利用の選択は匿名Supabaseユーザーを作成する機能ではなく、DB・RLS・Auth設定や共有データには影響しません。
+
 ## Auth callback
 
 root callback方式です。`emailRedirectTo`は検証済みの`window.location.origin + import.meta.env.BASE_URL`から作るため、GitHub project Pagesではrepository pathを含みます。Supabase DashboardのSite URL、Redirect URL、magic-link templateも同じ完全URLにしてください。公開signupを無効化し、magic linkは`shouldCreateUser: false`で招待済みユーザーだけに送ります。callbackのquery/hashにある`error`、`error_code`、`error_description`はログイン画面へ明示し、表示時に制御文字とHTML記号を除去したうえでURLから除去します。

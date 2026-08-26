@@ -12,9 +12,13 @@ import { CloudRepositoryError, SupabaseWorkspaceRepository, type LoadedWorkspace
 import type { Database } from './database.types'
 
 const LOCAL_ORG_KEY='nexus.cloud.organization.v1'
+const LOCAL_MODE_KEY='nexus.app.mode.v1'
 const message=(cause:unknown)=>cause instanceof Error?cause.message:'不明なエラーが発生しました'
 const rememberedOrganization=()=>{try{return localStorage.getItem(LOCAL_ORG_KEY)}catch{return null}}
 const rememberOrganization=(id:string)=>{try{localStorage.setItem(LOCAL_ORG_KEY,id)}catch{/* workspace preference is best-effort */}}
+const rememberedLocalMode=()=>{try{return localStorage.getItem(LOCAL_MODE_KEY)==='local'}catch{return false}}
+const rememberLocalMode=(enabled:boolean)=>{try{if(enabled)localStorage.setItem(LOCAL_MODE_KEY,'local');else localStorage.removeItem(LOCAL_MODE_KEY)}catch{/* mode preference is best-effort */}}
+const hasAuthCallback=(location:Pick<Location,'search'|'hash'>)=>{const query=new URLSearchParams(location.search),hash=new URLSearchParams(location.hash.replace(/^#/,''));return['code','error','error_code','error_description'].some((key)=>query.has(key)||hash.has(key))||hash.has('access_token')}
 const downloadRaw=(raw:string,prefix='nexus-ops-migration-source')=>{const url=URL.createObjectURL(new Blob([raw],{type:'application/json'})),anchor=document.createElement('a');anchor.href=url;anchor.download=`${prefix}-${new Date().toISOString().slice(0,10)}.json`;anchor.click();URL.revokeObjectURL(url)}
 const downloadBundle=(bundle:ExportBundle,prefix='nexus-ops-unsaved')=>downloadRaw(JSON.stringify(bundle,null,2),prefix)
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -23,10 +27,15 @@ function Screen({title,children}:{title:string;children:React.ReactNode}){return
 export function NoOrganizations({canCreate,reason,onCreate,onSignOut}:{canCreate:boolean;reason:string;onCreate:()=>void;onSignOut:()=>void}){return <Screen title="利用できる組織がありません"><p>認証は完了していますが、有効なmembershipがありません。</p><p id="empty-create-reason" className="cloud-help">{reason}</p><div className="migration-actions"><button type="button" className="button primary" aria-disabled={!canCreate} aria-describedby="empty-create-reason" onClick={()=>canCreate&&onCreate()}>新しい組織を作成</button><button className="button ghost" onClick={onSignOut}><LogOut size={16}/>ログアウト</button></div></Screen>}
 function MissingConfig(){return <Screen title="共有接続が設定されていません"><p>この公開版はSupabaseのProject URLとpublishable keyが必要です。秘密鍵、service role、DB passwordは設定しないでください。</p><dl className="config-list"><div><dt>必要な変数</dt><dd>VITE_SUPABASE_URL</dd></div><div><dt>必要な変数</dt><dd>VITE_SUPABASE_PUBLISHABLE_KEY</dd></div></dl></Screen>}
 
-function Login({client,config,callbackError}:{client:SupabaseClient<Database>;config:SupabaseBrowserConfig;callbackError:string}){
+function Login({client,config,callbackError,onChooseLocal}:{client:SupabaseClient<Database>;config:SupabaseBrowserConfig;callbackError:string;onChooseLocal:()=>void}){
   const [email,setEmail]=useState(''),[busy,setBusy]=useState(false),[notice,setNotice]=useState(''),[error,setError]=useState(callbackError)
   const submit=async(event:React.FormEvent)=>{event.preventDefault();setBusy(true);setError('');const {error:authError}=await client.auth.signInWithOtp({email,options:{emailRedirectTo:config.redirectTo,shouldCreateUser:false}});setBusy(false);if(authError){setError(authError.message);return}setNotice('招待済みのアドレスであれば、ログインリンクを送信しました。')}
-  return <Screen title="共有ワークスペースへログイン"><p>招待済みのメールアドレスを入力してください。未登録アカウントは作成されません。</p><p className="public-boundary-note">S4静的正本と初期73タスク本文は公開情報です。ログイン後の更新状態と共有編集データはSupabase Auth/RLSで保護されます。</p><form className="auth-form" onSubmit={submit}><label htmlFor="auth-email">メールアドレス</label><input id="auth-email" type="email" autoComplete="email" required value={email} onChange={(event)=>setEmail(event.target.value)}/><button className="button primary" disabled={busy}>{busy?'送信中…':'マジックリンクを送信'}</button></form>{notice&&<p role="status" className="cloud-success">{notice}</p>}{error&&<p role="alert" className="cloud-error">{error}</p>}<p className="cloud-help">リンクはこのサイトの <code>{new URL(config.redirectTo).pathname}</code> に戻ります。</p></Screen>
+  return <Screen title="共有ワークスペースへログイン"><p>招待済みのメールアドレスを入力してください。未登録アカウントは作成されません。</p><p className="public-boundary-note">S4静的正本と初期73タスク本文は公開情報です。ログイン後の更新状態と共有編集データはSupabase Auth/RLSで保護されます。</p><form className="auth-form" onSubmit={submit}><label htmlFor="auth-email">メールアドレス</label><input id="auth-email" type="email" autoComplete="email" required value={email} onChange={(event)=>setEmail(event.target.value)}/><button className="button primary" disabled={busy}>{busy?'送信中…':'マジックリンクを送信'}</button></form>{notice&&<p role="status" className="cloud-success">{notice}</p>}{error&&<p role="alert" className="cloud-error">{error}</p>}<p className="cloud-help">リンクはこのサイトの <code>{new URL(config.redirectTo).pathname}</code> に戻ります。</p><div className="local-mode-choice"><b>共有を使わずに始める</b><p>メール登録や入力なしで、このブラウザだけに保存して利用できます。</p><button type="button" className="button ghost" onClick={onChooseLocal}>メールなしでこの端末だけで使う</button></div></Screen>
+}
+
+function LocalMode({onChooseSharedLogin,sharedAvailable}:{onChooseSharedLogin:()=>void;sharedAvailable:boolean}){
+  const [dirty,setDirty]=useState(false)
+  return <><div className={`local-mode-note${sharedAvailable?' has-shared-switch':''}`} role="note"><ShieldAlert size={16} aria-hidden="true"/><span>この端末のブラウザ内だけに保存しています。共有・同期はされず、ブラウザデータを削除すると失う可能性があります。</span>{sharedAvailable&&<button type="button" className="button ghost" disabled={dirty} title={dirty?'未保存の変更を保存または破棄してから切り替えてください':undefined} onClick={onChooseSharedLogin}>共有ログインへ切り替える</button>}</div><App onDirtyChange={setDirty}/></>
 }
 
 function MigrationPreparation({workspace,repository,onImported,onReload,onSignOut}:{workspace:LoadedWorkspace;repository:SupabaseWorkspaceRepository;onImported:(value:LoadedWorkspace)=>void;onReload:()=>void;onSignOut:()=>void}){
@@ -82,10 +91,13 @@ export function Connected({client,session}:{client:SupabaseClient<Database>;sess
 }
 
 export default function CloudRoot(){
-  const callbackError=useMemo(()=>readAuthCallbackError(window.location),[]),config=useMemo(()=>readSupabaseConfig(),[]),client=useMemo(()=>config?createClient<Database>(config.url,config.publishableKey,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}}):null,[config]),[session,setSession]=useState<Session|null>(null),[ready,setReady]=useState(false),[error,setError]=useState(callbackError)
-  useEffect(()=>{if(callbackError)history.replaceState(history.state,'',location.pathname);if(!client){setReady(true);return}let active=true;void client.auth.getSession().then(({data,error:sessionError})=>{if(!active)return;if(sessionError)setError(sessionError.message);setSession(data.session);setReady(true)});const {data:{subscription}}=client.auth.onAuthStateChange((_event,next)=>{if(!active)return;setSession(next);setReady(true)});return()=>{active=false;subscription.unsubscribe()}},[callbackError,client])
-  if(!config)return import.meta.env.PROD?<MissingConfig/>:<><div className="local-mode-note" role="note"><ShieldAlert size={16}/><span>Supabase未設定のため、開発用ローカルモードです。共有はされません。</span></div><App/></>
+  const callbackError=useMemo(()=>readAuthCallbackError(window.location),[]),authCallback=useMemo(()=>hasAuthCallback(window.location),[]),config=useMemo(()=>readSupabaseConfig(),[]),[localMode,setLocalMode]=useState(()=>authCallback?false:rememberedLocalMode()),client=useMemo(()=>config&&!localMode?createClient<Database>(config.url,config.publishableKey,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}}):null,[config,localMode]),[session,setSession]=useState<Session|null>(null),[ready,setReady]=useState(false),[error,setError]=useState(callbackError)
+  useEffect(()=>{if(authCallback)rememberLocalMode(false);if(callbackError)history.replaceState(history.state,'',location.pathname);if(!client){setReady(true);return}let active=true;void client.auth.getSession().then(({data,error:sessionError})=>{if(!active)return;if(sessionError)setError(sessionError.message);setSession(data.session);setReady(true)});const {data:{subscription}}=client.auth.onAuthStateChange((_event,next)=>{if(!active)return;setSession(next);setReady(true)});return()=>{active=false;subscription.unsubscribe()}},[authCallback,callbackError,client])
+  const chooseLocal=()=>{rememberLocalMode(true);setSession(null);setLocalMode(true)}
+  const chooseSharedLogin=()=>{rememberLocalMode(false);setSession(null);setReady(false);setError(callbackError);setLocalMode(false)}
+  if(!config)return import.meta.env.PROD?<MissingConfig/>:<LocalMode sharedAvailable={false} onChooseSharedLogin={chooseSharedLogin}/>
+  if(localMode)return <LocalMode sharedAvailable onChooseSharedLogin={chooseSharedLogin}/>
   if(!ready)return <Screen title="sessionを復元しています"><p role="status">認証状態を確認中です…</p></Screen>
   if(error&&session)return <Screen title="認証状態を確認できません"><p role="alert" className="cloud-error">{error}</p><button className="button ghost" onClick={()=>{setError('');void client?.auth.signOut()}}>ログイン画面へ戻る</button></Screen>
-  return session?<Connected client={client!} session={session}/>:<Login client={client!} config={config} callbackError={error}/>
+  return session?<Connected client={client!} session={session}/>:<Login client={client!} config={config} callbackError={error} onChooseLocal={chooseLocal}/>
 }
