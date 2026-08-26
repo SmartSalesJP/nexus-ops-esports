@@ -11,9 +11,27 @@ const withoutComments=(source)=>source.replace(/\/\*[\s\S]*?\*\//g,'').replace(/
 const normalize=(source)=>source.replace(/\s+/g,' ').trim().toLowerCase()
 const first=withoutComments(firstSource),hardening=withoutComments(hardeningSource)
 const finalCreateGrant=`grant execute on function ${createSignature} to authenticated`
+const unparenthesizedJsonTextConcat=/\|\|\s*[a-z_][\w.]*(?:\s*->\s*'[^']+')*\s*->>/i
+const badJsonConcatProbes=[
+  "select 'phase-' || phase.value->>'code'",
+  "select '^C' || change.value->'payload'->>'phase'",
+  "select 'phase-' ||\n  task.value\n    -> 'payload'\n    ->> 'phase'",
+]
+const goodJsonConcatProbes=[
+  "select 'phase-' || (phase.value->>'code')",
+  "select '^C' || (change.value->'payload'->>'phase')",
+  "select 'phase-' ||\n  (task.value\n    -> 'payload'\n    ->> 'phase')",
+]
+
+if(badJsonConcatProbes.some((probe)=>!unparenthesizedJsonTextConcat.test(probe)))
+  fail('JSON concatenation guard does not reject every unsafe probe')
+if(goodJsonConcatProbes.some((probe)=>unparenthesizedJsonTextConcat.test(probe)))
+  fail('JSON concatenation guard rejects a parenthesized safe probe')
 
 if(/\bpg_catalog\.coalesce\s*\(/i.test(`${first}\n${hardening}`))
   fail('COALESCE is SQL syntax and must not be schema-qualified')
+if(unparenthesizedJsonTextConcat.test(`${first}\n${hardening}`))
+  fail('JSON text extraction used in concatenation must be parenthesized')
 if(!first.includes(`revoke all on function ${createSignature} from public, anon, authenticated, service_role;`))
   fail('migration 1 must revoke create RPC from every API role')
 if(new RegExp(`grant\\s+execute\\s+on\\s+function\\s+${createSignature.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}`,'i').test(first))

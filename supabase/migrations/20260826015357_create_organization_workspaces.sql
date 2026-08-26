@@ -176,7 +176,7 @@ begin
             'report_baseline','weekly_meta'
           )
           or (change.value->>'entityType' = 'task' and change.value->>'entityId' !~ '^C[0-6]-[0-9]{2}$')
-          or (change.value->>'entityType' = 'task' and change.value->>'entityId' !~ ('^C' || change.value->'payload'->>'phase' || '-[0-9]{2}$'))
+          or (change.value->>'entityType' = 'task' and change.value->>'entityId' !~ ('^C' || (change.value->'payload'->>'phase') || '-[0-9]{2}$'))
           or (change.value->>'entityType' = 'task' and not exists (
             select 1 from jsonb_array_elements(p_workspace_config->'phases') as phase(value)
             where phase.value->>'code' = change.value->'payload'->>'phase'
@@ -189,7 +189,7 @@ begin
           ))
           or (change.value->>'entityType' = 'flow_node' and not exists (
             select 1 from jsonb_array_elements(p_workspace_config->'phases') as phase(value)
-            where change.value->>'entityId' = 'phase-' || phase.value->>'code'
+            where change.value->>'entityId' = 'phase-' || (phase.value->>'code')
               and change.value->'payload'->'data'->>'label' = phase.value->>'name'
           ))
           or (change.value->>'entityType' = 'flow_node'
@@ -201,7 +201,7 @@ begin
          and not exists (
            select 1 from jsonb_array_elements(p_changes) as node(value)
            where node.value->>'entityType' = 'flow_node'
-             and node.value->>'entityId' = 'phase-' || task.value->'payload'->>'phase'
+             and node.value->>'entityId' = 'phase-' || (task.value->'payload'->>'phase')
              and node.value->'payload'->'data'->'taskIds' @> jsonb_build_array(task.value->>'entityId')
          )
      )
@@ -217,7 +217,7 @@ begin
            select 1 from jsonb_array_elements(p_changes) as task(value)
            where task.value->>'entityType' = 'task'
              and task.value->>'entityId' = task_id.value #>> '{}'
-             and 'phase-' || task.value->'payload'->>'phase' = node.value->>'entityId'
+             and 'phase-' || (task.value->'payload'->>'phase') = node.value->>'entityId'
          )
      )
      or exists (
@@ -225,8 +225,8 @@ begin
        where not exists (
          select 1 from jsonb_array_elements(p_changes) as edge(value)
          where edge.value->>'entityType' = 'flow_edge'
-           and edge.value->'payload'->>'source' = 'phase-' || expected.phase
-           and edge.value->'payload'->>'target' = 'phase-' || (expected.phase + 1)
+           and (edge.value->'payload'->>'source') = 'phase-' || expected.phase::text
+           and (edge.value->'payload'->>'target') = 'phase-' || (expected.phase + 1)::text
        )
      ) then
     raise exception using errcode = '22023', message = 'initial workspace changes are invalid';

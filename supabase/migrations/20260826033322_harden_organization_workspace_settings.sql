@@ -161,7 +161,7 @@ begin
       select 1 from public.entity_records as node
       where node.organization_id = p_organization_id
         and node.entity_type = 'flow_node'
-        and node.entity_id = 'phase-' || phase.value->>'code'
+        and node.entity_id = 'phase-' || (phase.value->>'code')
         and node.payload#>>'{data,label}' = phase.value->>'name'
         and pg_catalog.jsonb_typeof(node.payload#>'{data,taskIds}') = 'array'
     )
@@ -174,7 +174,7 @@ begin
         select 1 from public.entity_records as node
         where node.organization_id = p_organization_id
           and node.entity_type = 'flow_node'
-          and node.entity_id = 'phase-' || task.payload->>'phase'
+          and node.entity_id = 'phase-' || (task.payload->>'phase')
           and node.payload#>'{data,taskIds}' @> pg_catalog.jsonb_build_array(task.entity_id)
       )
   ) or exists (
@@ -191,7 +191,7 @@ begin
           and task.entity_type = 'task'
           and task.entity_id = node_task.task_id
           and (node.entity_id !~ '^phase-[0-6]$'
-            or node.entity_id = 'phase-' || task.payload->>'phase')
+            or node.entity_id = 'phase-' || (task.payload->>'phase'))
       )
   ) or exists (
     select 1
