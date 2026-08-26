@@ -17,12 +17,15 @@ This directory defines the reproducible database boundary for the existing Supab
 - project ref: `tfbiecbetxvxjksvptbx`
 - organization: SmartSalesJP
 - region: `ap-northeast-1`
-- migrations: `migrations/20260817144520_nexus_ops_shared_schema.sql`,
-  `migrations/20260817144521_index_foreign_key_columns.sql`, and
-  `migrations/20260817144522_add_task_result_entity.sql`
+- production migrations: `migrations/20260817065432_nexus_ops_shared_schema.sql`,
+  `migrations/20260817070015_index_foreign_key_columns.sql`,
+  `migrations/20260817102047_add_task_result_entity.sql`,
+  `migrations/20260818181229_add_task_result_checklist.sql`,
+  `migrations/20260826065233_create_organization_workspaces.sql`, and
+  `migrations/20260826065243_harden_organization_workspace_settings.sql`
 - SQL self-test: `tests/rls.sql`
 
-The task-result follow-up migration has not been applied to the remote database. It is intentionally up-only; apply it only after independent review and a disposable branch/local verification pass.
+The task-result entity and checklist migrations are applied to the production database. They are intentionally up-only; verify future follow-up migrations through independent review and a disposable branch/local verification pass before applying them.
 
 ## Security model
 
@@ -153,9 +156,9 @@ Delete changes contain `op`, `entityType`, `entityId`, and the current `expected
 
 ## Database Advisor disposition
 
-`20260817144521_index_foreign_key_columns.sql` adds the ten missing foreign-key indexes reported after the initial remote migration. Existing primary, unique, and composite indexes already cover the other foreign keys. Do not remove indexes merely because a new or empty database reports them as unused; reassess `unused_index` INFO only after representative production workload and query-plan evidence exist.
+`20260817070015_index_foreign_key_columns.sql` adds the ten missing foreign-key indexes reported after the initial remote migration. Existing primary, unique, and composite indexes already cover the other foreign keys. Do not remove indexes merely because a new or empty database reports them as unused; reassess `unused_index` INFO only after representative production workload and query-plan evidence exist.
 
-`20260817144522_add_task_result_entity.sql` adds no table, column, new foreign key, or RPC signature. It reuses the indexed organization-scoped entity link constraints and preserves the existing `SECURITY DEFINER` write engine's empty `search_path` and grants. Re-run linked security/performance advisors after applying it; do not treat the accepted RPC/allowlist INFO items below as newly introduced findings.
+`20260817102047_add_task_result_entity.sql` adds no table, column, new foreign key, or RPC signature. It reuses the indexed organization-scoped entity link constraints and preserves the existing `SECURITY DEFINER` write engine's empty `search_path` and grants. Re-run linked security/performance advisors after applying it; do not treat the accepted RPC/allowlist INFO items below as newly introduced findings.
 
 The remaining security INFO items are intentional and must be reviewed, not suppressed by weakening access controls:
 

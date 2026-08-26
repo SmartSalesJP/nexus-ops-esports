@@ -31,6 +31,6 @@ review fields and evidence, and the overall verification state is `適合`.
 Existing inconsistent completed tasks are shown with a warning without being
 mutated automatically, and can be moved away from `完了` for correction.
 
-`20260819120000_add_task_result_checklist.sql` extends only the JSON payload
+`20260818181229_add_task_result_checklist.sql` extends only the JSON payload
 validator. It does not add tables, entity types, links, grants, RLS policies,
 Auth behavior, or RPC signatures.
